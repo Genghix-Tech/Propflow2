@@ -47,6 +47,9 @@ export default function EditTenant() {
         monthly_rent: tenant.monthly_rent || "",
         maintenance_charges: tenant.maintenance_charges || "",
         security_deposit: tenant.security_deposit || "",
+        advance_deposit: tenant.advance_deposit || "",
+        tax_type: tenant.tax_type || "",
+        tax_percentage: tenant.tax_percentage || "",
         escalation_pct: tenant.escalation_pct || "0",
         lock_in_months: tenant.lock_in_months || "0",
         notify_whatsapp: tenant.notify_whatsapp ?? true,
@@ -72,6 +75,9 @@ export default function EditTenant() {
         monthly_rent: Number(form.monthly_rent),
         maintenance_charges: Number(form.maintenance_charges) || 0,
         security_deposit: Number(form.security_deposit) || 0,
+        advance_deposit: Number(form.advance_deposit) || 0,
+        tax_type: form.tax_type || null,
+        tax_percentage: Number(form.tax_percentage) || 0,
         escalation_pct: Number(form.escalation_pct) || 0,
         lock_in_months: Number(form.lock_in_months) || 0,
         date_of_birth: form.date_of_birth || null,
@@ -232,9 +238,33 @@ export default function EditTenant() {
               <Label text="Maintenance charges (PKR)" />
               <Input type="number" value={form.maintenance_charges} onChange={v => set("maintenance_charges", v)} placeholder="e.g. 1500" />
             </div>
-            <div className="sm:col-span-2">
+            <div>
               <Label text="Security deposit (PKR)" />
-              <Input type="number" value={form.security_deposit} onChange={v => set("security_deposit", v)} placeholder="e.g. 96000" />
+              <Input type="number" value={form.security_deposit} onChange={v => set("security_deposit", v)} placeholder="e.g. 64000" />
+              <p className="text-xs text-gray-400 mt-1">Refundable, held by landlord</p>
+            </div>
+            <div>
+              <Label text="Advance deposit (PKR)" />
+              <Input type="number" value={form.advance_deposit} onChange={v => set("advance_deposit", v)} placeholder="e.g. 32000" />
+              <p className="text-xs text-gray-400 mt-1">Already paid — credited against first invoice</p>
+            </div>
+            <div>
+              <Label text="Tax type" />
+              <Select value={form.tax_type} onChange={v => set("tax_type", v)}>
+                <option value="">None</option>
+                <option value="GST">GST</option>
+                <option value="WHT">WHT</option>
+                <option value="OTHER TAX">Other tax</option>
+              </Select>
+            </div>
+            <div>
+              <Label text="Tax percentage (%)" />
+              <Input type="number" value={form.tax_percentage} onChange={v => set("tax_percentage", v)} placeholder="e.g. 5" />
+              <p className="text-xs text-gray-400 mt-1">
+                % of monthly rent{form.monthly_rent && Number(form.tax_percentage) > 0
+                  ? ` — ${Math.round(Number(form.monthly_rent) * Number(form.tax_percentage) / 100).toLocaleString("en-PK")} PKR on this rent`
+                  : ""}, added automatically to every invoice
+              </p>
             </div>
           </div>
         </Section>

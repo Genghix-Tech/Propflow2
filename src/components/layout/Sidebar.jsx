@@ -1,5 +1,8 @@
 import { NavLink, useNavigate } from "react-router-dom"
+import { useQuery } from "@tanstack/react-query"
 import { useAuth } from "../../context/AuthContext"
+import { getUnreadMessageCount } from "../../services/tenantPortalService"
+import { COMPANY_NAME } from "../../config/branding"
 
 const navItems = [
   {
@@ -33,8 +36,8 @@ const navItems = [
     ),
   },
   {
-    label: "Enquiries",
-    to: "/enquiries",
+    label: "Messages",
+    to: "/messages",
     icon: (
       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
@@ -108,6 +111,16 @@ export default function Sidebar({ open, onClose }) {
     return can(moduleKey, "view")
   })
 
+  // Unread tenant messages — badge on the Messages nav item. Polling (not
+  // realtime) keeps this cheap; Header.jsx's toast/sound + instant
+  // invalidation is what actually updates it the moment a message arrives.
+  const { data: unreadMessageCount = 0 } = useQuery({
+    queryKey: ["unread-message-count"],
+    queryFn: getUnreadMessageCount,
+    enabled: visibleNavItems.some(i => i.to === "/messages"),
+    refetchInterval: 30000,
+  })
+
   const handleSignOut = async () => {
     await signOut()
     navigate("/login")
@@ -139,17 +152,8 @@ export default function Sidebar({ open, onClose }) {
       `}>
 
         {/* Logo */}
-        <div className="flex items-center gap-3 px-6 py-5 border-b border-gray-100">
-          <div className="w-9 h-9 bg-coral-500 rounded-xl flex items-center justify-center flex-shrink-0">
-            <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
-            </svg>
-          </div>
-          <div>
-            <div className="text-sm font-semibold text-gray-900">PropFlow</div>
-            <div className="text-xs text-gray-400">Property Management</div>
-          </div>
+        <div className="flex items-center px-6 py-5 border-b border-gray-100">
+          <img src="/logo.png" alt={COMPANY_NAME} className="h-10 w-auto max-w-[170px] object-contain" />
         </div>
 
         {/* Nav */}
@@ -168,7 +172,12 @@ export default function Sidebar({ open, onClose }) {
               }
             >
               {item.icon}
-              {item.label}
+              <span className="flex-1">{item.label}</span>
+              {item.to === "/messages" && unreadMessageCount > 0 && (
+                <span className="min-w-[18px] h-[18px] px-1 flex items-center justify-center bg-coral-500 text-white text-[10px] font-semibold rounded-full flex-shrink-0">
+                  {unreadMessageCount > 9 ? "9+" : unreadMessageCount}
+                </span>
+              )}
             </NavLink>
           ))}
         </nav>

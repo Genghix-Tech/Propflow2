@@ -11,6 +11,48 @@ export const AuthProvider = ({ children }) => {
   const [permissions, setPermissions] = useState({})
   const [loading, setLoading]         = useState(true)
 
+  const fetchProfile = async (userId, requestId, isStillCurrent) => {
+    try {
+      const { data: profileData, error: profileError } = await supabase
+        .from("profiles")
+        .select("*")
+        .eq("id", userId)
+        .single()
+
+      if (profileError) throw profileError
+      if (!isStillCurrent()) return
+
+      let roleRow = null
+      let perms = {}
+
+      if (profileData.role_id) {
+        const { data: rData, error: roleError } = await supabase
+          .from("roles")
+          .select("id, name, is_system")
+          .eq("id", profileData.role_id)
+          .single()
+
+        if (!roleError && rData) roleRow = rData
+
+        perms = await getPermissionsForUser(profileData.role_id)
+      }
+
+      if (!isStillCurrent()) return
+
+      // Set everything together so there's no render with partial state
+      setProfile(profileData)
+      setRoleData(roleRow)
+      setPermissions(perms)
+    } catch (err) {
+      console.error("fetchProfile error:", err)
+      if (isStillCurrent()) {
+        setProfile({ id: userId, role: "manager", username: null, display_name: "User", is_active: true })
+      }
+    } finally {
+      if (isStillCurrent()) setLoading(false)
+    }
+  }
+
   useEffect(() => {
   let activeRequestId = 0
 
@@ -33,65 +75,18 @@ export const AuthProvider = ({ children }) => {
   return () => listener.subscription.unsubscribe()
 }, [])
 
-const fetchProfile = async (userId, requestId, isStillCurrent) => {
-  try {
-    const { data: profileData, error: profileError } = await supabase
-      .from("profiles")
-      .select("*")
-      .eq("id", userId)
-      .single()
-
-    if (profileError) throw profileError
-    if (!isStillCurrent()) return
-
-    let roleRow = null
-    let perms = {}
-
-    if (profileData.role_id) {
-      const { data: rData, error: roleError } = await supabase
-        .from("roles")
-        .select("id, name, is_system")
-        .eq("id", profileData.role_id)
-        .single()
-
-      if (!roleError && rData) roleRow = rData
-
-      perms = await getPermissionsForUser(profileData.role_id)
-    }
-
-    if (!isStillCurrent()) return
-
-    // Set everything together so there's no render with partial state
-    setProfile(profileData)
-    setRoleData(roleRow)
-    setPermissions(perms)
-  } catch (err) {
-    console.error("fetchProfile error:", err)
-    if (isStillCurrent()) {
-      setProfile({ id: userId, role: "manager", username: null, display_name: "User", is_active: true })
-    }
-  } finally {
-    if (isStillCurrent()) setLoading(false)
-  }
-}
-
 const signIn = async (username, password) => {
-  const { data: profileData, error: profileError } = await supabase
-    .from("profiles")
-    .select("id, username, is_active, display_name, role_id")
-    .eq("username", username.toLowerCase().trim())
-    .maybeSingle()
+  // Single SECURITY DEFINER RPC resolves username -> login email without
+  // exposing the whole profiles table to anon (see migrations/security_hardening.sql).
+  const { data: rows, error: rpcError } = await supabase
+    .rpc("get_staff_email_by_username", { p_username: username.toLowerCase().trim() })
 
-  if (profileError || !profileData) throw new Error("Invalid username or password")
-  if (!profileData.is_active) throw new Error("Your account has been deactivated. Contact the administrator.")
-
-  const { data: email, error: rpcError } = await supabase
-    .rpc("get_user_email_by_id", { user_id: profileData.id })
-
-  if (rpcError || !email) throw new Error("Login failed — please contact administrator")
+  const match = rows?.[0]
+  if (rpcError || !match) throw new Error("Invalid username or password")
+  if (!match.is_active) throw new Error("Your account has been deactivated. Contact the administrator.")
 
   const { data, error } = await supabase.auth.signInWithPassword({
-    email: email.trim(),
+    email: match.email.trim(),
     password,
   })
 
@@ -100,7 +95,7 @@ const signIn = async (username, password) => {
   await supabase
     .from("profiles")
     .update({ last_login: new Date().toISOString() })
-    .eq("id", profileData.id)
+    .eq("id", match.user_id)
 
   return data
 }

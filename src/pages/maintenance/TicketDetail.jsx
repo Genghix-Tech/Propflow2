@@ -5,7 +5,6 @@ import { getTicketById, updateTicket, deleteTicket } from "../../services/mainte
 import { getEmployees } from "../../services/employeeService"
 import { formatCurrency, formatDate } from "../../lib/utils"
 import toast from "react-hot-toast"
-import { useAuth } from "../../context/AuthContext"
 
 const statusStyle = {
   open:        "bg-red-50 text-red-700",
@@ -36,7 +35,6 @@ export default function TicketDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const { role } = useAuth()
   const [editAssign, setEditAssign] = useState(false)
   const [selectedEmployee, setSelectedEmployee] = useState("")
   const [actualCost, setActualCost] = useState("")

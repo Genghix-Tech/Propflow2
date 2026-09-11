@@ -4,10 +4,12 @@ import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useNavigate } from "react-router-dom"
 import {
   getInvoices, getInvoiceSummary,
-  generateInvoicesForAll, markAsPaid,
+  generateInvoice, generateInvoicesForAll, invoiceExists, markAsPaid,
   updateInvoiceStatus, deleteInvoice
 } from "../../services/invoiceService"
 import { getTenants, getBuildings } from "../../services/tenantService"
+import SearchableSelect from "../../components/ui/SearchableSelect"
+import { COMPANY_NAME } from "../../config/branding"
 import toast from "react-hot-toast"
 
 const MONTHS = [
@@ -31,13 +33,15 @@ export default function InvoiceList() {
   const [status, setStatus]       = useState("")
   const [building, setBuilding]   = useState("")
   const [generating, setGenerating] = useState(false)
+  const [exporting, setExporting] = useState(false)
   const [showPayModal, setShowPayModal] = useState(null)
   const [payMethod, setPayMethod] = useState("bank_transfer")
   const [payDate, setPayDate]     = useState(now.toISOString().split("T")[0])
   const [genMonth, setGenMonth]   = useState(now.getMonth() + 1)
   const [genYear, setGenYear]     = useState(now.getFullYear())
+  const [genTenantId, setGenTenantId] = useState("") // "" = all active tenants
 
-  const { data: invoices = [], isLoading, refetch } = useQuery({
+  const { data: invoices = [], isLoading } = useQuery({
     queryKey: ["invoices", search, status, building],
     queryFn: () => getInvoices({ search, status, building }),
   })
@@ -58,6 +62,33 @@ export default function InvoiceList() {
   })
 
   const handleGenerateAll = async () => {
+    // Single tenant selected — create just their invoice (e.g. rent was
+    // just changed, or they were added mid-month and missed the bulk run).
+    if (genTenantId) {
+      const tenant = allTenants.find(t => t.id === genTenantId)
+      if (!tenant) return
+      if (!confirm(`Create ${MONTHS[genMonth - 1]} ${genYear} invoice for ${tenant.full_name}?`)) return
+      setGenerating(true)
+      try {
+        const alreadyExists = await invoiceExists(tenant.id, genMonth, genYear)
+        if (alreadyExists) {
+          toast.error(`${tenant.full_name} already has an invoice for ${MONTHS[genMonth - 1]} ${genYear}`)
+          return
+        }
+
+        await generateInvoice(tenant, genMonth, genYear)
+        toast.success(`Invoice created for ${tenant.full_name}`)
+        queryClient.invalidateQueries(["invoices"])
+        queryClient.invalidateQueries(["invoice-summary"])
+      } catch (err) {
+        toast.error("Failed to create invoice: " + err.message)
+      } finally {
+        setGenerating(false)
+      }
+      return
+    }
+
+    // No tenant selected — bulk-generate for every active tenant, as before.
     if (!confirm(`Generate invoices for ${MONTHS[genMonth - 1]} ${genYear} for all active tenants?`)) return
     setGenerating(true)
     try {
@@ -109,6 +140,43 @@ export default function InvoiceList() {
     }
   }
 
+  const handleExportExcel = async () => {
+    if (invoices.length === 0) { toast.error("No invoices to export"); return }
+    setExporting(true)
+    try {
+      const { exportToExcel } = await import("../../lib/excelExport")
+      const rows = invoices.map(inv => ({
+        "Invoice number": inv.invoice_number,
+        "Tenant": inv.tenants?.full_name || "",
+        "Phone": inv.tenants?.phone || "",
+        "Building": inv.buildings?.name || "",
+        "Unit": inv.units?.unit_number || "",
+        "Period": `${MONTHS[inv.month - 1]} ${inv.year}`,
+        "Due date": inv.due_date || "",
+        "Paid date": inv.paid_date || "",
+        "Payment method": inv.payment_method ? inv.payment_method.replace(/_/g, " ") : "",
+        "Rent amount": Number(inv.rent_amount || 0),
+        "Maintenance": Number(inv.maintenance_amount || 0),
+        "Security deposit": Number(inv.security_deposit_amount || 0),
+        "Advance deposit credit": Number(inv.advance_deposit_amount || 0),
+        "Utility charges": Number(inv.other_charges || 0),
+        "Tax": Number(inv.tax_amount || 0),
+        "Discount": Number(inv.discount_amount || 0),
+        "Total amount": Number(inv.total_amount || 0),
+        "Status": inv.status,
+      }))
+      const exportDate = now.toLocaleDateString("en-PK", { day: "2-digit", month: "long", year: "numeric" })
+      exportToExcel(
+        [{ name: "Invoices", rows, title: `${COMPANY_NAME} — Invoices — Exported ${exportDate}` }],
+        `invoices_${now.toISOString().split("T")[0]}.xlsx`
+      )
+    } catch (err) {
+      toast.error("Failed to export: " + err.message)
+    } finally {
+      setExporting(false)
+    }
+  }
+
   return (
     <div className="max-w-7xl mx-auto space-y-5">
 
@@ -120,6 +188,16 @@ export default function InvoiceList() {
         </div>
         {/* Generate invoices control */}
         <div className="flex items-center gap-2 flex-wrap">
+          <SearchableSelect
+            value={genTenantId}
+            onChange={setGenTenantId}
+            placeholder="All active tenants"
+            className="w-48"
+            options={[
+              { value: "", label: "All active tenants" },
+              ...allTenants.map(t => ({ value: t.id, label: t.full_name })),
+            ]}
+          />
           <select value={genMonth} onChange={e => setGenMonth(Number(e.target.value))}
             className="text-sm px-3 py-2.5 rounded-xl border border-gray-200 bg-white focus:outline-none focus:ring-2 focus:ring-brand-500">
             {MONTHS.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
@@ -131,11 +209,22 @@ export default function InvoiceList() {
           <button onClick={handleGenerateAll} disabled={generating}
             className="flex items-center gap-2 bg-coral-500 hover:bg-coral-700 text-white text-sm font-medium px-4 py-2.5 rounded-xl transition disabled:opacity-60">
             {generating
-              ? <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />Generating...</>
+              ? <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />{genTenantId ? "Creating..." : "Generating..."}</>
               : <><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                </svg>Generate invoices</>
+                </svg>{genTenantId ? "Create invoice" : "Generate invoices"}</>
             }
+          </button>
+          <button onClick={handleExportExcel} disabled={exporting}
+            className="flex items-center gap-2 text-sm px-4 py-2.5 rounded-xl border border-gray-200 hover:bg-gray-50 text-gray-600 transition disabled:opacity-60">
+            {exporting
+              ? <div className="w-4 h-4 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
+              : <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                    d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H8a2 2 0 01-2-2V5a2 2 0 012-2h6l6 6v11a2 2 0 01-2 2z" />
+                </svg>
+            }
+            {exporting ? "Exporting..." : "Export to Excel"}
           </button>
         </div>
       </div>

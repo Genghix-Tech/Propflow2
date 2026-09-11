@@ -1,4 +1,3 @@
-import { useAuth } from "../../context/AuthContext"
 import { useQuery } from "@tanstack/react-query"
 import { getTenants } from "../../services/tenantService"
 import { getInvoiceSummary, getInvoices } from "../../services/invoiceService"
@@ -13,7 +12,6 @@ const statusStyle = {
 }
 
 export default function Dashboard() {
-  const { user } = useAuth()
   const navigate = useNavigate()
 
   const { data: tenants = [] } = useQuery({

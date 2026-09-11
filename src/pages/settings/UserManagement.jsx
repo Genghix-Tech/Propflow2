@@ -5,9 +5,10 @@ import { useNavigate } from "react-router-dom"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   getUsers, createUser,
-  toggleUserActive, updateUserRole,
+  toggleUserActive,
   deleteUser, changePassword
 } from "../../services/userService"
+import { getAppSettings, updateInvoiceBankInfo } from "../../services/settingsService"
 import { useAuth } from "../../context/AuthContext"
 import toast from "react-hot-toast"
 
@@ -44,6 +45,31 @@ export default function UserManagement() {
     queryKey: ["roles"],
     queryFn: getRoles,
   })
+
+  const { data: appSettings } = useQuery({
+    queryKey: ["app-settings"],
+    queryFn: getAppSettings,
+  })
+  const [bankInfo, setBankInfo] = useState("")
+  const [bankInfoDirty, setBankInfoDirty] = useState(false)
+  const [savingBankInfo, setSavingBankInfo] = useState(false)
+  if (appSettings && !bankInfoDirty && bankInfo !== (appSettings.invoice_bank_info || "")) {
+    setBankInfo(appSettings.invoice_bank_info || "")
+  }
+
+  const handleSaveBankInfo = async () => {
+    setSavingBankInfo(true)
+    try {
+      await updateInvoiceBankInfo(bankInfo.trim())
+      setBankInfoDirty(false)
+      queryClient.invalidateQueries(["app-settings"])
+      toast.success("Invoice payment details saved")
+    } catch (err) {
+      toast.error(err.message || "Failed to save")
+    } finally {
+      setSavingBankInfo(false)
+    }
+  }
 
   const set = (field, value) => setForm(f => ({ ...f, [field]: value }))
 
@@ -159,7 +185,7 @@ export default function UserManagement() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h2 className="text-xl font-semibold text-gray-900">User management</h2>
-          <p className="text-sm text-gray-400 mt-0.5">Manage who has access to PropFlow</p>
+          <p className="text-sm text-gray-400 mt-0.5">Manage who has access to the system</p>
         </div>
         <div className="flex items-center gap-2">
           <button onClick={() => setShowPwModal(true)}
@@ -201,6 +227,27 @@ export default function UserManagement() {
         <div>
           <div className="text-sm font-semibold text-gray-900">{profile?.display_name}</div>
           <div className="text-xs text-gray-500 mt-0.5">@{profile?.username} · <span>{role}</span></div>
+        </div>
+      </div>
+
+      {/* Invoice payment details — shown on every invoice PDF/print */}
+      <div className="bg-white rounded-2xl border border-gray-100 p-6">
+        <h3 className="text-sm font-semibold text-gray-900">Invoice payment details</h3>
+        <p className="text-xs text-gray-400 mt-0.5 mb-3">
+          Bank account / payment method shown on every invoice's PDF and printout — e.g. bank name, account title, account number, IBAN.
+        </p>
+        <textarea
+          value={bankInfo}
+          onChange={e => { setBankInfo(e.target.value); setBankInfoDirty(true) }}
+          rows={3}
+          placeholder={"e.g. Bank Al Habib — Account Title: ISM Builders — A/C: 1234-5678901-2 — IBAN: PK00AHAB0000001234567890"}
+          className="w-full text-sm border border-gray-200 rounded-xl px-3.5 py-2.5 focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500 resize-none"
+        />
+        <div className="flex justify-end mt-3">
+          <button onClick={handleSaveBankInfo} disabled={savingBankInfo || !bankInfoDirty}
+            className="text-sm font-medium px-4 py-2 rounded-xl bg-brand-500 hover:bg-brand-600 disabled:opacity-40 disabled:cursor-not-allowed text-white transition">
+            {savingBankInfo ? "Saving…" : "Save"}
+          </button>
         </div>
       </div>
 
@@ -256,12 +303,16 @@ export default function UserManagement() {
                     <td className="px-4 py-4 hidden sm:table-cell">
                       {isOwner && u.id !== profile?.id ? (
                         <select
-			  key={u.role_id}
- 			 value={u.role_id || ""}
-			  onChange={e => handleRoleChange(u.id, e.target.value)}
-			  className="text-xs font-medium px-2.5 py-1 rounded-lg border-0 cursor-pointer focus:outline-none focus:ring-2 focus:ring-brand-500 bg-gray-100 text-			gray-700">
-		  {roles.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
-		</select>
+                          key={u.role_id}
+                          value={u.role_id || ""}
+                          onChange={e => handleRoleChange(u.id, e.target.value)}
+                          className="text-xs font-medium px-2.5 py-1 rounded-lg border-0 cursor-pointer focus:outline-none focus:ring-2 focus:ring-brand-500 bg-gray-100 text-gray-700">
+                          {/* Without this placeholder, a null role_id falls through to
+                              whichever role sorts first (Manager) LOOKING selected in the
+                              dropdown, even though nothing is actually assigned. */}
+                          {!u.role_id && <option value="">— No role —</option>}
+                          {roles.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+                        </select>
                       ) : (
                         <span className={`text-xs font-medium px-2.5 py-1 rounded-lg ${roleStyle[userRoleName] || "bg-gray-100 text-gray-600"}`}>
                           {userRoleName}

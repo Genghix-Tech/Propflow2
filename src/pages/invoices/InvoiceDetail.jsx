@@ -1,4 +1,4 @@
-import { formatCurrency, formatDate } from "../../lib/utils"
+import { formatCurrency } from "../../lib/utils"
 import { useParams, useNavigate } from "react-router-dom"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useState } from "react"
@@ -6,8 +6,12 @@ import {
   getInvoiceById, markAsPaid,
   updateInvoiceStatus, deleteInvoice,
   getUtilityCharges, addUtilityCharge, deleteUtilityCharge,
+  getInvoiceDiscounts, addInvoiceDiscount, deleteInvoiceDiscount,
+  getSecurityInstallments, addSecurityInstallment, deleteSecurityInstallment,
 } from "../../services/invoiceService"
+import { getAppSettings } from "../../services/settingsService"
 import toast from "react-hot-toast"
+import { COMPANY_NAME, COMPANY_TAGLINE, SOFTWARE_CREDIT } from "../../config/branding"
 
 const UTILITY_LABELS = {
   electricity: "Electricity",
@@ -38,11 +42,18 @@ export default function InvoiceDetail() {
   const [payDate, setPayDate] = useState(new Date().toISOString().split("T")[0])
   const [instrumentNumber, setInstrumentNumber] = useState("")
   const [downloadingPdf, setDownloadingPdf] = useState(false)
-  const [showAddUtility, setShowAddUtility] = useState(false)
+  const [printing, setPrinting] = useState(false)
+  const [showAddCharge, setShowAddCharge] = useState(false)
   const [utilityType, setUtilityType] = useState("electricity")
   const [utilityAmount, setUtilityAmount] = useState("")
   const [utilityNotes, setUtilityNotes] = useState("")
-  const [savingUtility, setSavingUtility] = useState(false)
+  const [securityInstallmentAmount, setSecurityInstallmentAmount] = useState("")
+  const [securityInstallmentNotes, setSecurityInstallmentNotes] = useState("")
+  const [savingCharge, setSavingCharge] = useState(false)
+  const [showAddDiscount, setShowAddDiscount] = useState(false)
+  const [discountType, setDiscountType] = useState("")
+  const [discountAmount, setDiscountAmount] = useState("")
+  const [savingDiscount, setSavingDiscount] = useState(false)
 
   const { data: invoice, isLoading, isError } = useQuery({
     queryKey: ["invoice", id],
@@ -54,6 +65,25 @@ export default function InvoiceDetail() {
     queryFn: () => getUtilityCharges(id),
     enabled: !!id,
   })
+
+  const { data: discountCharges = [] } = useQuery({
+    queryKey: ["invoice-discounts", id],
+    queryFn: () => getInvoiceDiscounts(id),
+    enabled: !!id,
+  })
+
+  const { data: securityInstallments = [] } = useQuery({
+    queryKey: ["invoice-security-installments", id],
+    queryFn: () => getSecurityInstallments(id),
+    enabled: !!id,
+  })
+
+  // Bank/payment details shown on the invoice PDF & print — set once in Settings.
+  const { data: appSettings } = useQuery({
+    queryKey: ["app-settings"],
+    queryFn: getAppSettings,
+  })
+  const bankInfo = appSettings?.invoice_bank_info || ""
 
   const handleMarkPaid = async () => {
     try {
@@ -95,7 +125,7 @@ export default function InvoiceDetail() {
     setDownloadingPdf(true)
     try {
       const { generateInvoicePdf } = await import("../../lib/invoicePdf")
-      generateInvoicePdf(invoice, utilityCharges)
+      generateInvoicePdf(invoice, utilityCharges, discountCharges, securityInstallments, bankInfo)
     } catch (err) {
       toast.error("Failed to generate PDF: " + err.message)
     } finally {
@@ -103,23 +133,51 @@ export default function InvoiceDetail() {
     }
   }
 
-  const handleAddUtility = async () => {
-    if (!utilityAmount || Number(utilityAmount) <= 0) { toast.error("Enter a valid amount"); return }
-    setSavingUtility(true)
+  const handlePrint = async () => {
+    setPrinting(true)
     try {
-      await addUtilityCharge(id, utilityType, utilityAmount, utilityNotes.trim() || null)
-      toast.success("Utility charge added")
+      const { generateInvoicePdf } = await import("../../lib/invoicePdf")
+      generateInvoicePdf(invoice, utilityCharges, discountCharges, securityInstallments, bankInfo, { print: true })
+    } catch (err) {
+      toast.error("Failed to prepare print: " + err.message)
+    } finally {
+      setPrinting(false)
+    }
+  }
+
+  // Utility bill, tax, and a security-deposit installment are all filled in
+  // the same form and can be added together in one click, or just one of
+  // them left blank — whichever has values gets added, same as adding one
+  // at a time. The security installment option covers a tenant paying their
+  // deposit split across months (e.g. half this month, rest next month).
+  // Tax is no longer added here — it's a fixed field on the tenant, applied
+  // automatically to every invoice (see AddTenant.jsx/EditTenant.jsx).
+  const handleAddCharges = async () => {
+    const wantsUtility = utilityAmount && Number(utilityAmount) > 0
+    const wantsSecurity = securityInstallmentAmount && Number(securityInstallmentAmount) > 0
+    if (!wantsUtility && !wantsSecurity) {
+      toast.error("Enter a utility bill amount, a security installment, or both")
+      return
+    }
+    setSavingCharge(true)
+    try {
+      if (wantsUtility) await addUtilityCharge(id, utilityType, utilityAmount, utilityNotes.trim() || null)
+      if (wantsSecurity) await addSecurityInstallment(id, securityInstallmentAmount, securityInstallmentNotes.trim() || null)
+      toast.success("Charge(s) added")
       setUtilityAmount("")
       setUtilityNotes("")
-      setShowAddUtility(false)
+      setSecurityInstallmentAmount("")
+      setSecurityInstallmentNotes("")
+      setShowAddCharge(false)
       queryClient.invalidateQueries(["invoice", id])
       queryClient.invalidateQueries(["utility-charges", id])
+      queryClient.invalidateQueries(["invoice-security-installments", id])
       queryClient.invalidateQueries(["invoices"])
       queryClient.invalidateQueries(["invoice-summary"])
     } catch (err) {
       toast.error("Failed to add charge: " + err.message)
     } finally {
-      setSavingUtility(false)
+      setSavingCharge(false)
     }
   }
 
@@ -133,6 +191,53 @@ export default function InvoiceDetail() {
       queryClient.invalidateQueries(["invoice-summary"])
     } catch (err) {
       toast.error("Failed to remove charge: " + err.message)
+    }
+  }
+
+  const handleDeleteSecurityInstallment = async (installmentId) => {
+    try {
+      await deleteSecurityInstallment(installmentId, id)
+      toast.success("Installment removed")
+      queryClient.invalidateQueries(["invoice", id])
+      queryClient.invalidateQueries(["invoice-security-installments", id])
+      queryClient.invalidateQueries(["invoices"])
+      queryClient.invalidateQueries(["invoice-summary"])
+    } catch (err) {
+      toast.error("Failed to remove installment: " + err.message)
+    }
+  }
+
+  const handleAddDiscount = async () => {
+    if (!discountType.trim()) { toast.error("Enter a discount type"); return }
+    if (!discountAmount || Number(discountAmount) <= 0) { toast.error("Enter a valid amount"); return }
+    setSavingDiscount(true)
+    try {
+      await addInvoiceDiscount(id, discountType.trim(), discountAmount)
+      toast.success("Discount added")
+      setDiscountType("")
+      setDiscountAmount("")
+      setShowAddDiscount(false)
+      queryClient.invalidateQueries(["invoice", id])
+      queryClient.invalidateQueries(["invoice-discounts", id])
+      queryClient.invalidateQueries(["invoices"])
+      queryClient.invalidateQueries(["invoice-summary"])
+    } catch (err) {
+      toast.error("Failed to add discount: " + err.message)
+    } finally {
+      setSavingDiscount(false)
+    }
+  }
+
+  const handleDeleteDiscount = async (discountId) => {
+    try {
+      await deleteInvoiceDiscount(discountId, id)
+      toast.success("Discount removed")
+      queryClient.invalidateQueries(["invoice", id])
+      queryClient.invalidateQueries(["invoice-discounts", id])
+      queryClient.invalidateQueries(["invoices"])
+      queryClient.invalidateQueries(["invoice-summary"])
+    } catch (err) {
+      toast.error("Failed to remove discount: " + err.message)
     }
   }
 
@@ -161,8 +266,8 @@ export default function InvoiceDetail() {
       <div className="print-only mb-4 pb-4 border-b-2 border-gray-200">
         <div className="flex justify-between items-center">
           <div>
-            <div className="text-2xl font-bold text-gray-900">PropFlow</div>
-            <div className="text-sm text-gray-400">Real Estate Management</div>
+            <div className="text-2xl font-bold text-gray-900">{COMPANY_NAME}</div>
+            <div className="text-sm text-gray-400">{COMPANY_TAGLINE}</div>
           </div>
           <div className="text-right">
             <div className="text-sm text-gray-400">
@@ -184,12 +289,15 @@ export default function InvoiceDetail() {
           Back to invoices
         </button>
         <div className="flex items-center gap-2">
-          <button onClick={() => window.print()}
-            className="flex items-center gap-2 text-sm px-4 py-2.5 rounded-xl border border-gray-200 hover:bg-gray-50 text-gray-600 transition">
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
-            </svg>
+          <button onClick={handlePrint} disabled={printing}
+            className="flex items-center gap-2 text-sm px-4 py-2.5 rounded-xl border border-gray-200 hover:bg-gray-50 text-gray-600 transition disabled:opacity-60">
+            {printing
+              ? <div className="w-4 h-4 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
+              : <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                    d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
+                </svg>
+            }
             Print
           </button>
           <button onClick={handleDownloadPdf} disabled={downloadingPdf}
@@ -237,8 +345,8 @@ export default function InvoiceDetail() {
                 </svg>
               </div>
               <div>
-                <div className="text-lg font-semibold text-gray-900">PropFlow</div>
-                <div className="text-xs text-gray-400">Real Estate Management</div>
+                <div className="text-lg font-semibold text-gray-900">{COMPANY_NAME}</div>
+                <div className="text-xs text-gray-400">{COMPANY_TAGLINE}</div>
               </div>
             </div>
             <div className="text-right">
@@ -304,48 +412,9 @@ export default function InvoiceDetail() {
 
         {/* Line items */}
         <div className="p-8 border-b border-gray-100">
-          <div className="flex items-center justify-between mb-4">
-            <div className="text-xs font-semibold text-gray-400 uppercase tracking-wide">
-              Charges
-            </div>
-            <button onClick={() => setShowAddUtility(v => !v)}
-              className="no-print flex items-center gap-1.5 text-xs font-medium text-coral-500 hover:text-coral-700 transition">
-              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-              </svg>
-              Add utility charge
-            </button>
+          <div className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-4">
+            Charges
           </div>
-
-          {showAddUtility && (
-            <div className="no-print bg-gray-50 rounded-xl p-4 mb-4 flex flex-wrap items-end gap-3">
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1.5">Type</label>
-                <select value={utilityType} onChange={e => setUtilityType(e.target.value)}
-                  className="px-3 py-2 text-sm rounded-lg border border-gray-200 bg-white focus:outline-none focus:ring-2 focus:ring-brand-500">
-                  {Object.entries(UTILITY_LABELS).map(([key, label]) => (
-                    <option key={key} value={key}>{label}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1.5">Amount (PKR)</label>
-                <input type="number" value={utilityAmount} onChange={e => setUtilityAmount(e.target.value)}
-                  placeholder="e.g. 3500"
-                  className="w-32 px-3 py-2 text-sm rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-brand-500" />
-              </div>
-              <div className="flex-1 min-w-[140px]">
-                <label className="block text-xs font-medium text-gray-600 mb-1.5">Notes (optional)</label>
-                <input type="text" value={utilityNotes} onChange={e => setUtilityNotes(e.target.value)}
-                  placeholder="e.g. meter reading, unit consumed"
-                  className="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-brand-500" />
-              </div>
-              <button onClick={handleAddUtility} disabled={savingUtility}
-                className="px-4 py-2 text-sm rounded-lg bg-coral-500 hover:bg-coral-700 text-white font-medium transition disabled:opacity-60">
-                {savingUtility ? "Adding..." : "Add"}
-              </button>
-            </div>
-          )}
 
           <table className="w-full">
             <thead>
@@ -371,6 +440,41 @@ export default function InvoiceDetail() {
                   </td>
                 </tr>
               )}
+              {Number(invoice.security_deposit_amount) > 0 && (
+                <tr>
+                  <td className="py-3 text-sm text-gray-700">Security deposit (one-time)</td>
+                  <td className="py-3 text-sm text-gray-900 text-right font-medium">
+                    {formatCurrency(invoice.security_deposit_amount)}
+                  </td>
+                </tr>
+              )}
+              {Number(invoice.advance_deposit_amount) > 0 && (
+                <tr>
+                  <td className="py-3 text-sm text-gray-700">Advance deposit paid (credit)</td>
+                  <td className="py-3 text-sm text-green-600 text-right font-medium">
+                    -{formatCurrency(invoice.advance_deposit_amount)}
+                  </td>
+                </tr>
+              )}
+              {securityInstallments.map(inst => (
+                <tr key={inst.id} className="group">
+                  <td className="py-3 text-sm text-gray-700">
+                    Security deposit installment
+                    {inst.notes && <span className="text-gray-400"> — {inst.notes}</span>}
+                  </td>
+                  <td className="py-3 text-sm text-gray-900 text-right font-medium">
+                    <span className="inline-flex items-center gap-2">
+                      {formatCurrency(inst.amount)}
+                      <button onClick={() => handleDeleteSecurityInstallment(inst.id)}
+                        className="no-print opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 transition">
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </span>
+                  </td>
+                </tr>
+              ))}
               {utilityCharges.map(charge => (
                 <tr key={charge.id} className="group">
                   <td className="py-3 text-sm text-gray-700">
@@ -390,8 +494,151 @@ export default function InvoiceDetail() {
                   </td>
                 </tr>
               ))}
+              {Number(invoice.tax_amount) > 0 && (
+                <tr>
+                  <td className="py-3 text-sm text-gray-700">
+                    {invoice.tax_type || "Tax"}{invoice.tax_percentage ? ` (${invoice.tax_percentage}%)` : ""}
+                  </td>
+                  <td className="py-3 text-sm text-gray-900 text-right font-medium">
+                    {formatCurrency(invoice.tax_amount)}
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
+
+          {/* Additional charges — utility bill and a security-deposit
+              installment are filled in the same form, so you can add just
+              one, or both, together in one click. Tax isn't added here — it's
+              a fixed field on the tenant, applied automatically to every
+              invoice (see AddTenant.jsx/EditTenant.jsx). */}
+          <div className="no-print mt-6 pt-6 border-t border-gray-100">
+            <div className="flex items-center justify-between mb-3">
+              <div className="text-xs font-semibold text-gray-400 uppercase tracking-wide">
+                Additional charges
+              </div>
+              <button onClick={() => setShowAddCharge(v => !v)}
+                className="flex items-center gap-1.5 text-xs font-medium text-coral-500 hover:text-coral-700 transition">
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                </svg>
+                Add charge
+              </button>
+            </div>
+
+            {showAddCharge && (
+              <div className="bg-gray-50 rounded-xl p-4 space-y-4">
+                <p className="text-xs text-gray-400">
+                  Fill in a utility bill, a security installment, or both — only the fields you fill in get added.
+                </p>
+
+                <div className="flex flex-wrap items-end gap-3">
+                  <div className="text-xs font-medium text-gray-500 w-full sm:w-auto sm:self-center">Utility bill</div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1.5">Utility</label>
+                    <select value={utilityType} onChange={e => setUtilityType(e.target.value)}
+                      className="px-3 py-2 text-sm rounded-lg border border-gray-200 bg-white focus:outline-none focus:ring-2 focus:ring-brand-500">
+                      {Object.entries(UTILITY_LABELS).map(([key, label]) => (
+                        <option key={key} value={key}>{label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1.5">Amount (PKR)</label>
+                    <input type="number" value={utilityAmount} onChange={e => setUtilityAmount(e.target.value)}
+                      placeholder="e.g. 3500"
+                      className="w-32 px-3 py-2 text-sm rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-brand-500" />
+                  </div>
+                  <div className="flex-1 min-w-[140px]">
+                    <label className="block text-xs font-medium text-gray-600 mb-1.5">Notes (optional)</label>
+                    <input type="text" value={utilityNotes} onChange={e => setUtilityNotes(e.target.value)}
+                      placeholder="e.g. meter reading, unit consumed"
+                      className="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-brand-500" />
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-end gap-3 pt-3 border-t border-gray-200">
+                  <div className="text-xs font-medium text-gray-500 w-full sm:w-auto sm:self-center">Security installment</div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1.5">Amount (PKR)</label>
+                    <input type="number" value={securityInstallmentAmount} onChange={e => setSecurityInstallmentAmount(e.target.value)}
+                      placeholder="e.g. 16000"
+                      className="w-32 px-3 py-2 text-sm rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-brand-500" />
+                  </div>
+                  <div className="flex-1 min-w-[140px]">
+                    <label className="block text-xs font-medium text-gray-600 mb-1.5">Notes (optional)</label>
+                    <input type="text" value={securityInstallmentNotes} onChange={e => setSecurityInstallmentNotes(e.target.value)}
+                      placeholder="e.g. 2nd of 2 installments"
+                      className="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-brand-500" />
+                  </div>
+                </div>
+
+                <div className="flex justify-end">
+                  <button onClick={handleAddCharges} disabled={savingCharge}
+                    className="px-4 py-2 text-sm rounded-lg bg-coral-500 hover:bg-coral-700 text-white font-medium transition disabled:opacity-60">
+                    {savingCharge ? "Adding..." : "Add"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Discount — kept separate from Additional charges since it
+              subtracts from the total instead of adding to it. */}
+          <div className="mt-6 pt-6 border-t border-gray-100">
+            <div className="flex items-center justify-between mb-3">
+              <div className="text-xs font-semibold text-gray-400 uppercase tracking-wide">
+                Discount
+              </div>
+              <button onClick={() => setShowAddDiscount(v => !v)}
+                className="no-print flex items-center gap-1.5 text-xs font-medium text-coral-500 hover:text-coral-700 transition">
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                </svg>
+                Add discount
+              </button>
+            </div>
+
+            {discountCharges.length > 0 && (
+              <div className="space-y-1 mb-3">
+                {discountCharges.map(discount => (
+                  <div key={discount.id} className="group flex items-center justify-between text-sm">
+                    <span className="text-gray-700">{discount.discount_type}</span>
+                    <span className="inline-flex items-center gap-2">
+                      <span className="text-red-600 font-medium">-{formatCurrency(discount.amount)}</span>
+                      <button onClick={() => handleDeleteDiscount(discount.id)}
+                        className="no-print opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 transition">
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {showAddDiscount && (
+              <div className="no-print bg-gray-50 rounded-xl p-4 flex flex-wrap items-end gap-3">
+                <div className="flex-1 min-w-[140px]">
+                  <label className="block text-xs font-medium text-gray-600 mb-1.5">Discount type</label>
+                  <input type="text" value={discountType} onChange={e => setDiscountType(e.target.value)}
+                    placeholder="e.g. Early payment, Loyalty discount"
+                    className="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-brand-500" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1.5">Amount (PKR)</label>
+                  <input type="number" value={discountAmount} onChange={e => setDiscountAmount(e.target.value)}
+                    placeholder="e.g. 1000"
+                    className="w-32 px-3 py-2 text-sm rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-brand-500" />
+                </div>
+                <button onClick={handleAddDiscount} disabled={savingDiscount}
+                  className="px-4 py-2 text-sm rounded-lg bg-coral-500 hover:bg-coral-700 text-white font-medium transition disabled:opacity-60">
+                  {savingDiscount ? "Adding..." : "Add"}
+                </button>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Total */}
@@ -400,17 +647,23 @@ export default function InvoiceDetail() {
             <div className="w-64 space-y-2">
               <div className="flex justify-between text-sm text-gray-500">
                 <span>Subtotal</span>
-                  <span>{formatCurrency(invoice.total_amount)}</span>
+                <span>{formatCurrency(
+                  Number(invoice.total_amount) - Number(invoice.tax_amount || 0) + Number(invoice.discount_amount || 0)
+                )}</span>
               </div>
               <div className="flex justify-between text-sm text-gray-500">
-                <span>Tax</span>
-                  <span>PKR 0</span>
+                <span>{invoice.tax_type || "Tax"}{invoice.tax_percentage ? ` (${invoice.tax_percentage}%)` : ""}</span>
+                <span>{formatCurrency(invoice.tax_amount || 0)}</span>
               </div>
+              {Number(invoice.discount_amount || 0) > 0 && (
+                <div className="flex justify-between text-sm text-red-600">
+                  <span>Discount</span>
+                  <span>-{formatCurrency(invoice.discount_amount)}</span>
+                </div>
+              )}
               <div className="flex justify-between text-base font-semibold text-gray-900 border-t border-gray-200 pt-3">
                 <span>Total due</span>
-                <span className="text-brand-600">
-                    <span className="text-brand-600">{formatCurrency(invoice.total_amount)}</span>
-                </span>
+                <span className="text-brand-600">{formatCurrency(invoice.total_amount)}</span>
               </div>
             </div>
           </div>
@@ -442,7 +695,7 @@ export default function InvoiceDetail() {
 
           {/* Print footer */}
           <div className="print-only mt-8 pt-4 border-t border-gray-200 text-center text-xs text-gray-400">
-            PropFlow · Real Estate Management · Thank you for your payment
+            {COMPANY_NAME} · Thank you for your payment · Powered by {SOFTWARE_CREDIT}
           </div>
         </div>
       </div>

@@ -4,7 +4,6 @@ import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useState } from "react"
 import {
   getEmployeeById, deleteEmployee,
-  getAttendance, markAttendance,
   getSalaryPayments, processSalary
 } from "../../services/employeeService"
 import toast from "react-hot-toast"
@@ -37,20 +36,6 @@ const statusStyle = {
   on_leave: "bg-yellow-50 text-yellow-700",
 }
 
-const attendanceStyle = {
-  present:  "bg-green-500",
-  absent:   "bg-red-500",
-  half_day: "bg-yellow-400",
-  on_leave: "bg-blue-400",
-}
-
-const attendanceLabel = {
-  present:  "P",
-  absent:   "A",
-  half_day: "H",
-  on_leave: "L",
-}
-
 const MONTHS = [
   "January","February","March","April","May","June",
   "July","August","September","October","November","December"
@@ -62,8 +47,6 @@ export default function EmployeeProfile() {
   const queryClient = useQueryClient()
   const now = new Date()
 
-  const [attMonth, setAttMonth] = useState(now.getMonth() + 1)
-  const [attYear, setAttYear]   = useState(now.getFullYear())
   const [showSalaryModal, setShowSalaryModal] = useState(false)
   const [salaryForm, setSalaryForm] = useState({
     month: now.getMonth() + 1,
@@ -82,12 +65,6 @@ export default function EmployeeProfile() {
     queryFn: () => getEmployeeById(id),
   })
 
-  const { data: attendance = [] } = useQuery({
-    queryKey: ["attendance", id, attMonth, attYear],
-    queryFn: () => getAttendance(id, attMonth, attYear),
-    enabled: !!id,
-  })
-
   const { data: salaryHistory = [] } = useQuery({
     queryKey: ["salary", id],
     queryFn: () => getSalaryPayments(id),
@@ -103,16 +80,6 @@ export default function EmployeeProfile() {
       navigate("/employees")
     } catch {
       toast.error("Failed to remove employee")
-    }
-  }
-
-  const handleAttendance = async (date, status) => {
-    try {
-      await markAttendance(id, date, status)
-      toast.success("Attendance marked")
-      queryClient.invalidateQueries(["attendance", id, attMonth, attYear])
-    } catch {
-      toast.error("Failed to mark attendance")
     }
   }
 
@@ -134,21 +101,6 @@ export default function EmployeeProfile() {
       toast.error("Failed to process salary")
     }
   }
-
-  const getDaysInMonth = (month, year) => new Date(year, month, 0).getDate()
-  const daysInMonth = getDaysInMonth(attMonth, attYear)
-  const days = Array.from({ length: daysInMonth }, (_, i) => {
-    const d = String(i + 1).padStart(2, "0")
-    const m = String(attMonth).padStart(2, "0")
-    const date = `${attYear}-${m}-${d}`
-    const record = attendance.find(a => a.date === date)
-    return { day: i + 1, date, status: record?.status || null }
-  })
-
-  const presentCount = days.filter(d => d.status === "present").length
-  const absentCount  = days.filter(d => d.status === "absent").length
-  const halfDayCount = days.filter(d => d.status === "half_day").length
-  const leaveCount   = days.filter(d => d.status === "on_leave").length
 
   const netSalary = (
     Number(salaryForm.base_salary || employee?.salary || 0) +
@@ -297,88 +249,6 @@ export default function EmployeeProfile() {
           {employee.notes && (
             <InfoRow label="Notes" value={employee.notes} />
           )}
-        </div>
-      </div>
-
-      {/* Attendance section */}
-      <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between flex-wrap gap-3">
-          <h3 className="text-sm font-semibold text-gray-900">Attendance</h3>
-          <div className="flex items-center gap-2">
-            <select value={attMonth} onChange={e => setAttMonth(Number(e.target.value))}
-              className="text-sm px-3 py-2 rounded-xl border border-gray-200 bg-white focus:outline-none focus:ring-2 focus:ring-brand-500">
-              {MONTHS.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
-            </select>
-            <select value={attYear} onChange={e => setAttYear(Number(e.target.value))}
-              className="text-sm px-3 py-2 rounded-xl border border-gray-200 bg-white focus:outline-none focus:ring-2 focus:ring-brand-500">
-              {[2024, 2025, 2026, 2027].map(y => <option key={y} value={y}>{y}</option>)}
-            </select>
-          </div>
-        </div>
-
-        {/* Attendance summary */}
-        <div className="grid grid-cols-4 divide-x divide-gray-100 border-b border-gray-100">
-          {[
-            { label: "Present",  count: presentCount, color: "text-green-600" },
-            { label: "Absent",   count: absentCount,  color: "text-red-500" },
-            { label: "Half day", count: halfDayCount, color: "text-yellow-600" },
-            { label: "On leave", count: leaveCount,   color: "text-blue-500" },
-          ].map(item => (
-            <div key={item.label} className="p-4 text-center">
-              <div className={`text-xl font-semibold ${item.color}`}>{item.count}</div>
-              <div className="text-xs text-gray-400 mt-0.5">{item.label}</div>
-            </div>
-          ))}
-        </div>
-
-        {/* Calendar grid */}
-        <div className="p-6">
-          <div className="text-xs text-gray-400 mb-3 flex items-center gap-4 flex-wrap">
-            <span>Click a day to mark attendance:</span>
-            {[
-              { status: "present",  label: "Present",  color: "bg-green-500" },
-              { status: "absent",   label: "Absent",   color: "bg-red-500" },
-              { status: "half_day", label: "Half day", color: "bg-yellow-400" },
-              { status: "on_leave", label: "Leave",    color: "bg-blue-400" },
-            ].map(l => (
-              <span key={l.status} className="flex items-center gap-1.5">
-                <span className={`w-3 h-3 rounded-sm ${l.color}`} />
-                {l.label}
-              </span>
-            ))}
-          </div>
-          <div className="grid gap-2"
-            style={{ gridTemplateColumns: "repeat(auto-fill, minmax(44px, 1fr))" }}>
-            {days.map(({ day, date, status }) => (
-              <div key={date} className="relative group">
-                <div className={`
-                  w-full aspect-square rounded-xl flex flex-col items-center justify-center
-                  text-xs font-medium cursor-pointer transition border
-                  ${status
-                    ? `${attendanceStyle[status]} text-white border-transparent`
-                    : "bg-gray-50 text-gray-400 border-gray-100 hover:border-brand-300"
-                  }
-                `}>
-                  <span>{day}</span>
-                  {status && <span className="text-xs opacity-80">{attendanceLabel[status]}</span>}
-                </div>
-                <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1 z-10 hidden group-hover:flex flex-col bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden min-w-max">
-                  {[
-                    { status: "present",  label: "Present",  color: "hover:bg-green-50 text-green-700" },
-                    { status: "absent",   label: "Absent",   color: "hover:bg-red-50 text-red-700" },
-                    { status: "half_day", label: "Half day", color: "hover:bg-yellow-50 text-yellow-700" },
-                    { status: "on_leave", label: "Leave",    color: "hover:bg-blue-50 text-blue-700" },
-                  ].map(opt => (
-                    <button key={opt.status}
-                      onClick={() => handleAttendance(date, opt.status)}
-                      className={`px-4 py-2 text-xs text-left font-medium ${opt.color} transition`}>
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
         </div>
       </div>
 

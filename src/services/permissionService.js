@@ -1,5 +1,4 @@
 import { supabase } from "../lib/supabase"
-import { supabaseAdmin } from "../lib/supabaseAdmin"
 
 const MODULES = [
   { key: "dashboard",   label: "Dashboard" },
@@ -8,7 +7,7 @@ const MODULES = [
   { key: "employees",   label: "Employees" },
   { key: "maintenance", label: "Maintenance" },
   { key: "buildings",   label: "Buildings" },
-  { key: "enquiries",   label: "Enquiries" },
+  { key: "messages",    label: "Messages" },
   { key: "reports",     label: "Reports" },
   { key: "settings",    label: "Settings" },
 ]
@@ -56,7 +55,7 @@ export const getPermissionsForUser = async (roleId) => {
 }
 
 export const createRole = async (name, description) => {
-  const { data, error } = await supabaseAdmin
+  const { data, error } = await supabase
     .from("roles")
     .insert([{ name, description, is_system: false }])
     .select()
@@ -69,13 +68,13 @@ export const createRole = async (name, description) => {
     module: m.key,
     can_view: false, can_add: false, can_edit: false, can_delete: false,
   }))
-  await supabaseAdmin.from("role_permissions").insert(defaultPerms)
+  await supabase.from("role_permissions").insert(defaultPerms)
 
   return data
 }
 
 export const updateRole = async (roleId, { name, description }) => {
-  const { error } = await supabaseAdmin
+  const { error } = await supabase
     .from("roles")
     .update({ name, description })
     .eq("id", roleId)
@@ -83,7 +82,7 @@ export const updateRole = async (roleId, { name, description }) => {
 }
 
 export const deleteRole = async (roleId) => {
-  const { error } = await supabaseAdmin
+  const { error } = await supabase
     .from("roles")
     .delete()
     .eq("id", roleId)
@@ -91,7 +90,7 @@ export const deleteRole = async (roleId) => {
 }
 
 export const updateModulePermission = async (roleId, module, permissions) => {
-  const { error } = await supabaseAdmin
+  const { error } = await supabase
     .from("role_permissions")
     .upsert({
       role_id: roleId,
@@ -105,7 +104,7 @@ export const updateModulePermission = async (roleId, module, permissions) => {
 }
 
 export const assignRoleToUser = async (userId, roleId) => {
-  const { error } = await supabaseAdmin
+  const { error } = await supabase
     .from("profiles")
     .update({ role_id: roleId })
     .eq("id", userId)

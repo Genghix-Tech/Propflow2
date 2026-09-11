@@ -58,37 +58,6 @@ export const deleteEmployee = async (id) => {
   if (error) throw error
 }
 
-export const getAttendance = async (employeeId, month, year) => {
-  const startDate = `${year}-${String(month).padStart(2, "0")}-01`
-  const endDate = new Date(year, month, 0).toISOString().split("T")[0]
-
-  const { data, error } = await supabase
-    .from("attendance")
-    .select("*")
-    .eq("employee_id", employeeId)
-    .gte("date", startDate)
-    .lte("date", endDate)
-    .order("date")
-  if (error) throw error
-  return data
-}
-
-export const markAttendance = async (employeeId, date, status, checkIn = null, checkOut = null) => {
-  const { data, error } = await supabase
-    .from("attendance")
-    .upsert({
-      employee_id: employeeId,
-      date,
-      status,
-      check_in: checkIn,
-      check_out: checkOut,
-    }, { onConflict: "employee_id,date" })
-    .select()
-    .single()
-  if (error) throw error
-  return data
-}
-
 export const getSalaryPayments = async (employeeId) => {
   const { data, error } = await supabase
     .from("salary_payments")

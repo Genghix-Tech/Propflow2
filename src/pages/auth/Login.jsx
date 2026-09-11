@@ -1,6 +1,7 @@
 import { useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { useAuth } from "../../context/AuthContext"
+import { COMPANY_NAME, COMPANY_TAGLINE, SOFTWARE_CREDIT } from "../../config/branding"
 
 export default function Login() {
   const { signIn } = useAuth()
@@ -36,7 +37,7 @@ export default function Login() {
   <div className="inline-flex flex-col items-center justify-center mb-4">
     <img
       src="/logo.png"
-      alt="Company Logo"
+      alt={COMPANY_NAME}
       className="h-16 w-auto object-contain mb-3"
       onError={e => {
         e.target.style.display = "none"
@@ -53,8 +54,7 @@ export default function Login() {
       </svg>
     </div>
   </div>
-  <h1 className="text-2xl font-semibold text-gray-900">PropFlow</h1>
-  <p className="text-sm text-gray-500 mt-1">Property Management System</p>
+  <p className="text-sm text-gray-500 mt-1">{COMPANY_TAGLINE}</p>
 </div>
 
         {/* Card */}
@@ -126,7 +126,7 @@ export default function Login() {
         </div>
 
         <p className="text-center text-xs text-gray-400 mt-6">
-          PropFlow · Real Estate Management Platform
+          Powered by {SOFTWARE_CREDIT}
         </p>
       </div>
     </div>

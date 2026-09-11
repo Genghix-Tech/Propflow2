@@ -20,6 +20,7 @@
 
   body {
     background: white !important;
+    font-size: 11pt;
   }
 
   .no-print {
@@ -39,8 +40,33 @@
     margin: 0 !important;
   }
 
+  /* Force any two-column layouts (e.g. Personal details / Lease details) to
+     stack in one column — side-by-side columns get cramped/cut on A4 width. */
+  .print-stack {
+    display: block !important;
+  }
+  .print-stack > * + * {
+    margin-top: 1rem;
+  }
+
+  /* Cards shouldn't shift color or shadow, and shouldn't be split across a
+     page break halfway through — keeps each section looking like one block. */
+  .print-card {
+    box-shadow: none !important;
+    border: 1px solid #e5e7eb !important;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  table {
+    break-inside: auto;
+  }
+  tr {
+    break-inside: avoid;
+  }
+
   @page {
-    margin: 20mm;
+    margin: 16mm;
     size: A4;
   }
 }

@@ -64,6 +64,28 @@ export const generateInvoice = async (tenant, month, year) => {
   const dueDate = new Date(year, month - 1, 5)
   const invoiceNumber = await generateInvoiceNumber(month, year)
 
+  // Security deposit and advance deposit are settled once — only on the
+  // tenant's very first invoice — never again on the invoices that follow.
+  // Security is ADDED (refundable amount now being billed); advance deposit
+  // is SUBTRACTED (already handed over at signing, credited against what's due).
+  const { count: priorInvoiceCount, error: countError } = await supabase
+    .from("invoices")
+    .select("*", { count: "exact", head: true })
+    .eq("tenant_id", tenant.id)
+  if (countError) throw countError
+
+  const isFirstInvoice = priorInvoiceCount === 0
+  const securityDeposit = isFirstInvoice ? Number(tenant.security_deposit || 0) : 0
+  const advanceDeposit = isFirstInvoice ? Number(tenant.advance_deposit || 0) : 0
+  const rentAmount = Number(tenant.monthly_rent)
+  // Tax is a percentage of rent, set once on the tenant — unlike security/
+  // advance deposit, it applies to EVERY invoice, not just the first one.
+  // The percentage is recomputed against THIS invoice's rent (so it tracks
+  // rent escalation correctly) and the resulting PKR amount is snapshotted
+  // onto the invoice, same as before.
+  const taxPercentage = Number(tenant.tax_percentage || 0)
+  const taxAmount = taxPercentage > 0 ? Math.round(rentAmount * taxPercentage / 100) : 0
+
   const payload = {
     tenant_id: tenant.id,
     building_id: tenant.building_id,
@@ -71,10 +93,15 @@ export const generateInvoice = async (tenant, month, year) => {
     invoice_number: invoiceNumber,
     month,
     year,
-    rent_amount: Number(tenant.monthly_rent),
+    rent_amount: rentAmount,
     maintenance_amount: Number(tenant.maintenance_charges || 0),
+    security_deposit_amount: securityDeposit,
+    advance_deposit_amount: advanceDeposit,
+    tax_amount: taxAmount,
+    tax_percentage: taxPercentage,
+    tax_type: taxAmount > 0 ? (tenant.tax_type || "Tax") : null,
     other_charges: 0,
-    total_amount: Number(tenant.monthly_rent) + Number(tenant.maintenance_charges || 0),
+    total_amount: rentAmount + Number(tenant.maintenance_charges || 0) + securityDeposit - advanceDeposit + taxAmount,
     due_date: dueDate.toISOString().split("T")[0],
     status: "pending",
   }
@@ -86,6 +113,17 @@ export const generateInvoice = async (tenant, month, year) => {
     .single()
   if (error) throw error
   return data
+}
+
+export const invoiceExists = async (tenantId, month, year) => {
+  const { data } = await supabase
+    .from("invoices")
+    .select("id")
+    .eq("tenant_id", tenantId)
+    .eq("month", month)
+    .eq("year", year)
+    .single()
+  return !!data
 }
 
 export const generateInvoicesForAll = async (tenants, month, year) => {
@@ -179,25 +217,47 @@ export const getUtilityCharges = async (invoiceId) => {
 }
 
 const recalculateInvoiceTotal = async (invoiceId) => {
+  // tax_amount is intentionally NOT recalculated here — it's snapshotted once
+  // at generation time as rent × the tenant's tax_percentage (see
+  // generateInvoice), not built up from line items. It's just read here so
+  // it can be included in the total, same as rent/maintenance.
   const { data: invoice, error: invErr } = await supabase
     .from("invoices")
-    .select("rent_amount, maintenance_amount")
+    .select("rent_amount, maintenance_amount, security_deposit_amount, advance_deposit_amount, tax_amount")
     .eq("id", invoiceId)
     .single()
   if (invErr) throw invErr
 
-  const { data: charges, error: chErr } = await supabase
-    .from("utility_charges")
-    .select("amount")
-    .eq("invoice_id", invoiceId)
+  const [
+    { data: charges, error: chErr },
+    { data: discounts, error: discErr },
+    { data: securityInstallments, error: secErr },
+  ] = await Promise.all([
+    supabase.from("utility_charges").select("amount").eq("invoice_id", invoiceId),
+    supabase.from("invoice_discounts").select("amount").eq("invoice_id", invoiceId),
+    supabase.from("invoice_security_installments").select("amount").eq("invoice_id", invoiceId),
+  ])
   if (chErr) throw chErr
+  if (discErr) throw discErr
+  if (secErr) throw secErr
 
   const utilityTotal = charges.reduce((sum, c) => sum + Number(c.amount), 0)
-  const total = Number(invoice.rent_amount) + Number(invoice.maintenance_amount || 0) + utilityTotal
+  const discountTotal = discounts.reduce((sum, d) => sum + Number(d.amount), 0)
+  const securityInstallmentTotal = securityInstallments.reduce((sum, s) => sum + Number(s.amount), 0)
+  const total = Number(invoice.rent_amount)
+    + Number(invoice.maintenance_amount || 0)
+    + Number(invoice.security_deposit_amount || 0)
+    - Number(invoice.advance_deposit_amount || 0)
+    + utilityTotal + Number(invoice.tax_amount || 0) - discountTotal + securityInstallmentTotal
 
   const { error: updErr } = await supabase
     .from("invoices")
-    .update({ other_charges: utilityTotal, total_amount: total })
+    .update({
+      other_charges: utilityTotal,
+      discount_amount: discountTotal,
+      security_installment_amount: securityInstallmentTotal,
+      total_amount: total,
+    })
     .eq("id", invoiceId)
   if (updErr) throw updErr
 }
@@ -210,8 +270,71 @@ export const addUtilityCharge = async (invoiceId, utilityType, amount, notes = n
   await recalculateInvoiceTotal(invoiceId)
 }
 
+// ─── Security deposit installments ─────────────────────────────────────────
+// Lets staff manually add a security-deposit installment to ANY invoice, for
+// tenants paying their security deposit split across two or more months
+// (e.g. half this month with rent, the rest next month) instead of the full
+// amount auto-billed on the first invoice.
+
+export const getSecurityInstallments = async (invoiceId) => {
+  const { data, error } = await supabase
+    .from("invoice_security_installments")
+    .select("*")
+    .eq("invoice_id", invoiceId)
+    .order("created_at")
+  if (error) throw error
+  return data
+}
+
+export const addSecurityInstallment = async (invoiceId, amount, notes = null) => {
+  const { error } = await supabase
+    .from("invoice_security_installments")
+    .insert([{ invoice_id: invoiceId, amount: Number(amount), notes }])
+  if (error) throw error
+  await recalculateInvoiceTotal(invoiceId)
+}
+
+export const deleteSecurityInstallment = async (id, invoiceId) => {
+  const { error } = await supabase.from("invoice_security_installments").delete().eq("id", id)
+  if (error) throw error
+  await recalculateInvoiceTotal(invoiceId)
+}
+
 export const deleteUtilityCharge = async (id, invoiceId) => {
   const { error } = await supabase.from("utility_charges").delete().eq("id", id)
+  if (error) throw error
+  await recalculateInvoiceTotal(invoiceId)
+}
+
+// Tax used to be a manually-entered per-invoice line item here. It's now a
+// percentage-of-rent field on the tenant (tax_type/tax_percentage), applied automatically to
+// every invoice in generateInvoice() — see AddTenant.jsx/EditTenant.jsx.
+
+// ─── Invoice discount ───────────────────────────────────────────────────────
+// Manually-entered discount lines, kept in their own table (not mixed into
+// utility/tax "additional charges") since they subtract from the invoice
+// total instead of adding to it. discount_type is free text, same as tax.
+
+export const getInvoiceDiscounts = async (invoiceId) => {
+  const { data, error } = await supabase
+    .from("invoice_discounts")
+    .select("*")
+    .eq("invoice_id", invoiceId)
+    .order("created_at")
+  if (error) throw error
+  return data
+}
+
+export const addInvoiceDiscount = async (invoiceId, discountType, amount) => {
+  const { error } = await supabase
+    .from("invoice_discounts")
+    .insert([{ invoice_id: invoiceId, discount_type: discountType, amount: Number(amount) }])
+  if (error) throw error
+  await recalculateInvoiceTotal(invoiceId)
+}
+
+export const deleteInvoiceDiscount = async (id, invoiceId) => {
+  const { error } = await supabase.from("invoice_discounts").delete().eq("id", id)
   if (error) throw error
   await recalculateInvoiceTotal(invoiceId)
 }

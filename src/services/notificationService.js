@@ -2,11 +2,13 @@ import { supabase } from "../lib/supabase"
 
 // Pulls together everything that needs the staff's attention right now,
 // straight from existing tables — no separate "notifications" table needed.
-export const getNotifications = async () => {
+// Cleared items are filtered out entirely; read/unread state comes from
+// notification_status, scoped to the current user.
+export const getNotifications = async (userId) => {
   const today = new Date().toISOString().split("T")[0]
   const in30Days = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]
 
-  const [overdueInvoices, expiringLeases, newEnquiries, openTickets] = await Promise.all([
+  const [overdueInvoices, expiringLeases, openTickets, unrepliedMessages, statusRows] = await Promise.all([
     supabase
       .from("invoices")
       .select("id, invoice_number, total_amount, tenants(full_name)")
@@ -24,19 +26,29 @@ export const getNotifications = async () => {
       .limit(5),
 
     supabase
-      .from("enquiries")
-      .select("id, full_name, created_at")
-      .eq("status", "new")
-      .order("created_at", { ascending: false })
-      .limit(5),
-
-    supabase
       .from("maintenance")
       .select("id, title, priority")
       .in("status", ["open", "in_progress"])
       .order("created_at", { ascending: false })
       .limit(5),
+
+    // Conversations where the tenant's message is the latest one — i.e.
+    // staff hasn't replied yet. Keyed by message_id (not tenant_id) so a
+    // fresh message from the same tenant always shows as unread again,
+    // even if an earlier one from them was already marked read/cleared.
+    supabase
+      .from("tenant_conversations")
+      .select("message_id, tenant_id, tenant_name, last_message, last_message_at")
+      .eq("last_sender_type", "tenant")
+      .order("last_message_at", { ascending: false })
+      .limit(5),
+
+    userId
+      ? supabase.from("notification_status").select("notification_key, status").eq("user_id", userId)
+      : Promise.resolve({ data: [] }),
   ])
+
+  const statusMap = new Map((statusRows.data || []).map(r => [r.notification_key, r.status]))
 
   const items = []
 
@@ -56,14 +68,6 @@ export const getNotifications = async () => {
     link: `/tenants/${t.id}`,
   }))
 
-  newEnquiries.data?.forEach(e => items.push({
-    id: `enquiry-${e.id}`,
-    type: "new_enquiry",
-    title: `New rental enquiry`,
-    subtitle: e.full_name,
-    link: `/enquiries`,
-  }))
-
   openTickets.data?.forEach(t => items.push({
     id: `ticket-${t.id}`,
     type: "open_ticket",
@@ -72,5 +76,47 @@ export const getNotifications = async () => {
     link: `/maintenance/${t.id}`,
   }))
 
+  unrepliedMessages.data?.forEach(m => items.push({
+    id: `message-${m.message_id}`,
+    type: "new_message",
+    title: `New message from ${m.tenant_name}`,
+    subtitle: m.last_message,
+    link: `/messages?tenant=${m.tenant_id}`,
+  }))
+
   return items
+    .filter(n => statusMap.get(n.id) !== "cleared")
+    .map(n => ({ ...n, read: statusMap.get(n.id) === "read" }))
+}
+
+export const markNotificationRead = async (userId, key) => {
+  if (!userId) return
+  const { error } = await supabase
+    .from("notification_status")
+    .upsert([{ user_id: userId, notification_key: key, status: "read" }], { onConflict: "user_id,notification_key" })
+  if (error) throw error
+}
+
+export const clearNotification = async (userId, key) => {
+  if (!userId) return
+  const { error } = await supabase
+    .from("notification_status")
+    .upsert([{ user_id: userId, notification_key: key, status: "cleared" }], { onConflict: "user_id,notification_key" })
+  if (error) throw error
+}
+
+export const markAllNotificationsRead = async (userId, keys) => {
+  if (!userId || keys.length === 0) return
+  const { error } = await supabase
+    .from("notification_status")
+    .upsert(keys.map(key => ({ user_id: userId, notification_key: key, status: "read" })), { onConflict: "user_id,notification_key" })
+  if (error) throw error
+}
+
+export const clearAllNotifications = async (userId, keys) => {
+  if (!userId || keys.length === 0) return
+  const { error } = await supabase
+    .from("notification_status")
+    .upsert(keys.map(key => ({ user_id: userId, notification_key: key, status: "cleared" })), { onConflict: "user_id,notification_key" })
+  if (error) throw error
 }

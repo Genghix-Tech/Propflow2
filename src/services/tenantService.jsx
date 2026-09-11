@@ -5,7 +5,10 @@ export const getTenants = async ({ search = "", status = "", building = "" } = {
     .from("tenants")
     .select(`
       id, full_name, email, phone, status,
-      monthly_rent, lease_start, lease_end,
+      building_id, unit_id,
+      monthly_rent, maintenance_charges, security_deposit, advance_deposit,
+      tax_type, tax_percentage,
+      lease_start, lease_end,
       units ( unit_number, floor, type, bedrooms ),
       buildings ( name )
     `)

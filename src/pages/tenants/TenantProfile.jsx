@@ -2,7 +2,7 @@ import { useRef, useEffect } from "react"
 import { supabase } from "../../lib/supabase"
 import { useState } from "react"
 import { createTenantPortalLogin, resetTenantPortalPassword, toggleTenantPortalAccess } from "../../services/tenantPortalService"
-import { formatCurrency, formatDate } from "../../lib/utils"
+import { formatCurrency } from "../../lib/utils"
 import { useParams, useNavigate, Link } from "react-router-dom"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { getTenantById, deleteTenant } from "../../services/tenantService"
@@ -10,6 +10,7 @@ import toast from "react-hot-toast"
 import { getInvoicesByTenant } from "../../services/invoiceService"
 import { getTenantDocuments, markDocumentStatus, uploadTenantDocument, getDocumentSignedUrl, deleteTenantDocument, verifyTenantDocument } from "../../services/documentService"
 import { useAuth } from "../../context/AuthContext"
+import { COMPANY_NAME, COMPANY_TAGLINE, SOFTWARE_CREDIT } from "../../config/branding"
 
 const statusStyle = {
   active:   "bg-green-50 text-green-700",
@@ -26,6 +27,8 @@ export default function TenantProfile() {
   const [showPortalModal, setShowPortalModal] = useState(false)
   const [portalForm, setPortalForm] = useState({ username: "", password: "" })
   const [portalSaving, setPortalSaving] = useState(false)
+  const [downloadingPdf, setDownloadingPdf] = useState(false)
+  const [printing, setPrinting] = useState(false)
 
   const { user } = useAuth()
   const displayName = user?.user_metadata?.full_name || user?.email || "Staff"
@@ -48,6 +51,36 @@ export default function TenantProfile() {
   const handleDelete = () => {
     if (!confirm(`Remove ${tenant?.full_name}? This cannot be undone.`)) return
     deleteMutation.mutate()
+  }
+
+  const buildTenantPdf = async (options) => {
+    const [{ generateTenantPdf }, invoices] = await Promise.all([
+      import("../../lib/tenantPdf"),
+      getInvoicesByTenant(id),
+    ])
+    generateTenantPdf(tenant, invoices, options)
+  }
+
+  const handlePrint = async () => {
+    setPrinting(true)
+    try {
+      await buildTenantPdf({ print: true })
+    } catch (err) {
+      toast.error("Failed to prepare print: " + err.message)
+    } finally {
+      setPrinting(false)
+    }
+  }
+
+  const handleDownloadPdf = async () => {
+    setDownloadingPdf(true)
+    try {
+      await buildTenantPdf()
+    } catch (err) {
+      toast.error("Failed to generate PDF: " + err.message)
+    } finally {
+      setDownloadingPdf(false)
+    }
   }
 
   if (isLoading) return (
@@ -76,8 +109,8 @@ export default function TenantProfile() {
       <div className="print-only mb-6 pb-4 border-b-2 border-gray-200">
         <div className="flex items-center justify-between">
           <div>
-            <div className="text-2xl font-bold text-gray-900">PropFlow</div>
-            <div className="text-sm text-gray-400">Real Estate Management</div>
+            <div className="text-2xl font-bold text-gray-900">{COMPANY_NAME}</div>
+            <div className="text-sm text-gray-400">{COMPANY_TAGLINE}</div>
           </div>
           <div className="text-right">
             <div className="text-lg font-semibold text-gray-700">Tenant Profile</div>
@@ -100,13 +133,27 @@ export default function TenantProfile() {
           Back to tenants
         </button>
         <div className="flex items-center gap-2">
-          <button onClick={() => window.print()}
-            className="flex items-center gap-2 text-sm px-4 py-2.5 rounded-xl border border-gray-200 hover:bg-gray-50 text-gray-600 transition">
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
-            </svg>
+          <button onClick={handlePrint} disabled={printing}
+            className="flex items-center gap-2 text-sm px-4 py-2.5 rounded-xl border border-gray-200 hover:bg-gray-50 text-gray-600 transition disabled:opacity-60">
+            {printing
+              ? <div className="w-4 h-4 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
+              : <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                    d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
+                </svg>
+            }
             Print
+          </button>
+          <button onClick={handleDownloadPdf} disabled={downloadingPdf}
+            className="flex items-center gap-2 text-sm px-4 py-2.5 rounded-xl border border-gray-200 hover:bg-gray-50 text-gray-600 transition disabled:opacity-60">
+            {downloadingPdf
+              ? <div className="w-4 h-4 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
+              : <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                    d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H8a2 2 0 01-2-2V5a2 2 0 012-2h6l6 6v11a2 2 0 01-2 2z" />
+                </svg>
+            }
+            {downloadingPdf ? "Generating..." : "Download PDF"}
           </button>
           <Link to={`/tenants/${id}/edit`}
             className="flex items-center gap-2 text-sm px-4 py-2.5 rounded-xl border border-gray-200 hover:bg-gray-50 text-gray-600 transition">
@@ -136,7 +183,7 @@ export default function TenantProfile() {
       </div>
 
       {/* Profile header */}
-      <div className="bg-white rounded-2xl border border-gray-100 p-6">
+      <div className="bg-white rounded-2xl border border-gray-100 p-6 print-card">
         <div className="flex items-start gap-5">
           <div className="w-16 h-16 rounded-2xl bg-brand-50 text-brand-700 text-xl font-semibold flex items-center justify-center flex-shrink-0">
             {initials}
@@ -190,9 +237,9 @@ export default function TenantProfile() {
       </div>
 
       {/* Details grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 print-stack">
 
-        <div className="bg-white rounded-2xl border border-gray-100 p-6">
+        <div className="bg-white rounded-2xl border border-gray-100 p-6 print-card">
           <SectionTitle title="Personal details" />
           <InfoRow label="Full name" value={tenant.full_name} />
           <InfoRow label="Phone" value={tenant.phone} />
@@ -214,7 +261,7 @@ export default function TenantProfile() {
           } />
         </div>
 
-        <div className="bg-white rounded-2xl border border-gray-100 p-6">
+        <div className="bg-white rounded-2xl border border-gray-100 p-6 print-card">
           <SectionTitle title="Lease details" />
           <InfoRow label="Building" value={tenant.buildings?.name || "—"} />
           <InfoRow label="Unit" value={tenant.units?.unit_number || "—"} />
@@ -240,9 +287,9 @@ export default function TenantProfile() {
             value={tenant.escalation_pct ? `${tenant.escalation_pct}% per year` : "None"} />
         </div>
 
-        <div className="bg-white rounded-2xl border border-gray-100 p-6">
+        <div className="bg-white rounded-2xl border border-gray-100 p-6 print-card">
           <SectionTitle title="Financials" />
-          <div className="grid grid-cols-3 gap-3 mb-4">
+          <div className="grid grid-cols-2 gap-3 mb-4">
             <div className="bg-brand-50 rounded-xl p-3 text-center">
               <div className="text-lg font-semibold text-brand-700">
                 {formatCurrency(tenant.monthly_rent)}
@@ -259,15 +306,34 @@ export default function TenantProfile() {
               <div className="text-lg font-semibold text-purple-700">
                 {formatCurrency(tenant.security_deposit || 0)}
               </div>
-              <div className="text-xs text-gray-400 mt-0.5">Deposit</div>
+              <div className="text-xs text-gray-400 mt-0.5">Security (refundable)</div>
             </div>
+            <div className="bg-green-50 rounded-xl p-3 text-center">
+              <div className="text-lg font-semibold text-green-700">
+                {formatCurrency(tenant.advance_deposit || 0)}
+              </div>
+              <div className="text-xs text-gray-400 mt-0.5">Advance deposit paid</div>
+            </div>
+            {Number(tenant.tax_percentage) > 0 && (
+              <div className="bg-amber-50 rounded-xl p-3 text-center col-span-2">
+                <div className="text-lg font-semibold text-amber-700">
+                  {formatCurrency(Math.round(Number(tenant.monthly_rent) * Number(tenant.tax_percentage) / 100))}
+                </div>
+                <div className="text-xs text-gray-400 mt-0.5">
+                  {tenant.tax_type || "Tax"} ({tenant.tax_percentage}% of rent, added to every invoice)
+                </div>
+              </div>
+            )}
           </div>
           <InfoRow label="Total monthly due"
-            value={formatCurrency(Number(tenant.monthly_rent) + Number(tenant.maintenance_charges || 0))}
+            value={formatCurrency(
+              Number(tenant.monthly_rent) + Number(tenant.maintenance_charges || 0)
+              + Math.round(Number(tenant.monthly_rent) * Number(tenant.tax_percentage || 0) / 100)
+            )}
           />
         </div>
 
-        <div className="bg-white rounded-2xl border border-gray-100 p-6">
+        <div className="bg-white rounded-2xl border border-gray-100 p-6 print-card">
           <SectionTitle title="Notification preferences" />
           <div className="space-y-0 mb-5">
             {[
@@ -288,7 +354,7 @@ export default function TenantProfile() {
           </div>
           <SectionTitle title="KYC status" />
           {[
-            { label: "Aadhaar / ID",        done: !!tenant.id_number },
+            { label: "ID Card",        done: !!tenant.id_number },
             { label: "Rent agreement",       done: !!tenant.lease_start },
             { label: "Police verification",  done: false },
           ].map(doc => (
@@ -316,7 +382,7 @@ export default function TenantProfile() {
 
       {/* Print footer */}
       <div className="print-only mt-8 pt-4 border-t border-gray-200 text-center text-xs text-gray-400">
-        PropFlow · Real Estate Management · Confidential document
+        {COMPANY_NAME} · Confidential document · Powered by {SOFTWARE_CREDIT}
       </div>
 
       {/* Portal modal */}
@@ -628,7 +694,7 @@ function PaymentHistory({ tenantId }) {
     .reduce((sum, i) => sum + Number(i.total_amount), 0)
 
   return (
-    <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
+    <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden print-card">
       <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
         <h3 className="text-sm font-semibold text-gray-900">Payment history</h3>
         <div className="flex items-center gap-4">
@@ -726,6 +792,19 @@ function StaffMessaging({ tenantId, staffName }) {
       .then(m => m.getMyMessages(tenantId)),
   })
 
+  // Viewing this panel is also staff "reading" the tenant's messages —
+  // clears the unread badge, same as opening the conversation in the
+  // dedicated Messages inbox.
+  useEffect(() => {
+    if (!tenantId) return
+    import("../../services/tenantPortalService").then(m => m.markTenantMessagesRead(tenantId))
+      .then(() => {
+        queryClient.invalidateQueries(["unread-message-count"])
+        queryClient.invalidateQueries(["conversations"])
+      })
+      .catch(() => {})
+  }, [tenantId, queryClient])
+
   useEffect(() => {
     if (!tenantId) return
     const channel = supabase
@@ -733,7 +812,12 @@ function StaffMessaging({ tenantId, staffName }) {
       .on("postgres_changes", {
         event: "INSERT", schema: "public", table: "messages",
         filter: `tenant_id=eq.${tenantId}`,
-      }, () => queryClient.invalidateQueries(["messages", tenantId]))
+      }, () => {
+        queryClient.invalidateQueries(["messages", tenantId])
+        import("../../services/tenantPortalService").then(m => m.markTenantMessagesRead(tenantId))
+          .then(() => queryClient.invalidateQueries(["unread-message-count"]))
+          .catch(() => {})
+      })
       .subscribe()
     return () => supabase.removeChannel(channel)
   }, [tenantId, queryClient])
@@ -763,9 +847,16 @@ function StaffMessaging({ tenantId, staffName }) {
   }
 
   return (
-    <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
-      <div className="px-6 py-4 border-b border-gray-100">
+    <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden no-print">
+      <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
         <h3 className="text-sm font-semibold text-gray-900">Messages with tenant</h3>
+        <Link to={`/messages?tenant=${tenantId}`}
+          className="text-xs text-brand-500 hover:text-brand-700 font-medium flex items-center gap-1 transition">
+          Open in Messages
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+        </Link>
       </div>
       <div className="flex flex-col" style={{ height: "400px" }}>
         <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-5 space-y-3">

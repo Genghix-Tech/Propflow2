@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useNavigate } from "react-router-dom"
 import {
   getRoles, getRolePermissions, createRole,
-  updateRole, deleteRole, updateModulePermission, MODULES
+  deleteRole, updateModulePermission, MODULES
 } from "../../services/permissionService"
 import { useAuth } from "../../context/AuthContext"
 import toast from "react-hot-toast"

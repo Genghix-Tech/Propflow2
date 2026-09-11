@@ -1,10 +1,12 @@
 import { useQuery } from "@tanstack/react-query"
 import { getTenants, getBuildings } from "../../services/tenantService"
 import { getInvoices, getInvoiceSummary } from "../../services/invoiceService"
-import { getEmployees, getEmployeeSummary } from "../../services/employeeService"
-import { getTickets, getMaintenanceSummary } from "../../services/maintenanceService"
+import { getEmployeeSummary } from "../../services/employeeService"
+import { getMaintenanceSummary } from "../../services/maintenanceService"
 import { formatCurrency, formatDate } from "../../lib/utils"
 import { useState } from "react"
+import toast from "react-hot-toast"
+import { COMPANY_NAME } from "../../config/branding"
 
 const MONTHS = [
   "January","February","March","April","May","June",
@@ -15,6 +17,9 @@ export default function Reports() {
   const now = new Date()
   const [selectedMonth, setSelectedMonth] = useState(now.getMonth() + 1)
   const [selectedYear, setSelectedYear]   = useState(now.getFullYear())
+  const [exporting, setExporting] = useState(false)
+  const [printing, setPrinting] = useState(false)
+  const [downloadingPdf, setDownloadingPdf] = useState(false)
 
   const { data: tenants = [] }    = useQuery({ queryKey: ["tenants"],    queryFn: () => getTenants() })
   const { data: buildings = [] }  = useQuery({ queryKey: ["buildings"],  queryFn: getBuildings })
@@ -22,7 +27,6 @@ export default function Reports() {
   const { data: invSummary }      = useQuery({ queryKey: ["invoice-summary"],   queryFn: getInvoiceSummary })
   const { data: empSummary }      = useQuery({ queryKey: ["employee-summary"],  queryFn: getEmployeeSummary })
   const { data: maintSummary }    = useQuery({ queryKey: ["maintenance-summary"], queryFn: getMaintenanceSummary })
-  const { data: tickets = [] }    = useQuery({ queryKey: ["tickets","","","","",""], queryFn: () => getTickets() })
 
   // Filter invoices by selected month/year
   const monthInvoices = invoices.filter(inv =>
@@ -65,12 +69,120 @@ export default function Reports() {
     }))
     .sort((a, b) => (a.daysLeft || 999) - (b.daysLeft || 999))
 
-  // Recent resolved tickets
-  const resolvedTickets = tickets
-    .filter(t => t.status === "resolved")
-    .slice(0, 5)
+  const buildReportData = () => ({
+    selectedMonth, selectedYear,
+    monthCollected, monthPending,
+    invSummary, empSummary, maintSummary,
+    activeTenants, expiringTenants, overdueTenants,
+    totalTenants: tenants.length,
+    monthInvoices, buildingStats, overdueList, expiringList,
+  })
 
-  const handlePrint = () => window.print()
+  const handlePrint = async () => {
+    setPrinting(true)
+    try {
+      const { generateReportPdf } = await import("../../lib/reportPdf")
+      generateReportPdf(buildReportData(), { print: true })
+    } catch (err) {
+      toast.error("Failed to prepare print: " + err.message)
+    } finally {
+      setPrinting(false)
+    }
+  }
+
+  const handleDownloadPdf = async () => {
+    setDownloadingPdf(true)
+    try {
+      const { generateReportPdf } = await import("../../lib/reportPdf")
+      generateReportPdf(buildReportData())
+    } catch (err) {
+      toast.error("Failed to generate PDF: " + err.message)
+    } finally {
+      setDownloadingPdf(false)
+    }
+  }
+
+  const handleExportExcel = async () => {
+    setExporting(true)
+    try {
+      const { exportToExcel } = await import("../../lib/excelExport")
+
+      const summarySheet = [
+        { Metric: "Collected this month", Value: monthCollected },
+        { Metric: "Pending this month", Value: monthPending },
+        { Metric: "Total collected ever", Value: invSummary?.totalCollected || 0 },
+        { Metric: "Total pending ever", Value: invSummary?.totalPending || 0 },
+        { Metric: "Monthly payroll", Value: empSummary?.totalSalary || 0 },
+        { Metric: "Active tenants", Value: activeTenants },
+        { Metric: "Expiring tenants", Value: expiringTenants },
+        { Metric: "Overdue tenants", Value: overdueTenants },
+        { Metric: "Total tenants", Value: tenants.length },
+      ]
+
+      const invoicesSheet = monthInvoices.map(inv => ({
+        "Invoice number": inv.invoice_number,
+        "Tenant": inv.tenants?.full_name || "",
+        "Building": inv.buildings?.name || "",
+        "Unit": inv.units?.unit_number || "",
+        "Amount": Number(inv.total_amount || 0),
+        "Status": inv.status,
+      }))
+
+      const occupancySheet = buildingStats.map(b => ({
+        "Building": b.name,
+        "Address": b.address || "",
+        "Total units": b.total,
+        "Occupied": b.occupied,
+        "Vacant": b.vacant,
+        "Occupancy %": b.pct,
+      }))
+
+      const overdueSheet = overdueList.map(t => ({
+        "Tenant": t.full_name,
+        "Building": t.buildings?.name || "",
+        "Unit": t.units?.unit_number || "",
+        "Phone": t.phone || "",
+        "Monthly rent": Number(t.monthly_rent || 0),
+      }))
+
+      const expiringSheet = expiringList.map(t => ({
+        "Tenant": t.full_name,
+        "Building": t.buildings?.name || "",
+        "Unit": t.units?.unit_number || "",
+        "Lease end": t.lease_end || "",
+        "Days left": t.daysLeft,
+      }))
+
+      const staffSheet = [
+        { Metric: "Total staff", Value: empSummary?.total || 0 },
+        { Metric: "Active", Value: empSummary?.active || 0 },
+        { Metric: "On leave", Value: empSummary?.onLeave || 0 },
+        { Metric: "Monthly payroll", Value: empSummary?.totalSalary || 0 },
+      ]
+
+      const maintenanceSheet = [
+        { Metric: "Open tickets", Value: maintSummary?.open || 0 },
+        { Metric: "In progress", Value: maintSummary?.inProgress || 0 },
+        { Metric: "Resolved", Value: maintSummary?.resolved || 0 },
+        { Metric: "Total cost", Value: maintSummary?.totalCost || 0 },
+      ]
+
+      const period = `${MONTHS[selectedMonth - 1]} ${selectedYear}`
+      await exportToExcel([
+        { name: "Financial Summary", rows: summarySheet, title: `${COMPANY_NAME} — Financial Summary — ${period}` },
+        { name: `Invoices ${MONTHS[selectedMonth - 1]} ${selectedYear}`, rows: invoicesSheet, title: `${COMPANY_NAME} — Invoices — ${period}` },
+        { name: "Occupancy", rows: occupancySheet, title: `${COMPANY_NAME} — Occupancy by Building` },
+        { name: "Overdue Tenants", rows: overdueSheet, title: `${COMPANY_NAME} — Overdue Rent` },
+        { name: "Expiring Leases", rows: expiringSheet, title: `${COMPANY_NAME} — Expiring Leases` },
+        { name: "Staff Summary", rows: staffSheet, title: `${COMPANY_NAME} — Staff Summary` },
+        { name: "Maintenance Summary", rows: maintenanceSheet, title: `${COMPANY_NAME} — Maintenance Summary` },
+      ], `report_${MONTHS[selectedMonth - 1]}_${selectedYear}.xlsx`)
+    } catch (err) {
+      toast.error("Failed to export: " + err.message)
+    } finally {
+      setExporting(false)
+    }
+  }
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">
@@ -79,7 +191,7 @@ export default function Reports() {
       <div className="print-only mb-6 pb-4 border-b-2 border-gray-200">
         <div className="flex justify-between items-center">
           <div>
-            <div className="text-2xl font-bold text-gray-900">PropFlow</div>
+            <div className="text-2xl font-bold text-gray-900">{COMPANY_NAME}</div>
             <div className="text-sm text-gray-400">Real Estate Management</div>
           </div>
           <div className="text-right">
@@ -106,13 +218,38 @@ export default function Reports() {
             className="text-sm px-3 py-2.5 rounded-xl border border-gray-200 bg-white focus:outline-none focus:ring-2 focus:ring-brand-500">
             {[2024, 2025, 2026, 2027].map(y => <option key={y} value={y}>{y}</option>)}
           </select>
-          <button onClick={handlePrint}
-            className="flex items-center gap-2 text-sm px-4 py-2.5 rounded-xl border border-gray-200 hover:bg-gray-50 text-gray-600 transition">
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
-            </svg>
+          <button onClick={handlePrint} disabled={printing}
+            className="flex items-center gap-2 text-sm px-4 py-2.5 rounded-xl border border-gray-200 hover:bg-gray-50 text-gray-600 transition disabled:opacity-60">
+            {printing
+              ? <div className="w-4 h-4 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
+              : <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                    d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
+                </svg>
+            }
             Print report
+          </button>
+          <button onClick={handleDownloadPdf} disabled={downloadingPdf}
+            className="flex items-center gap-2 text-sm px-4 py-2.5 rounded-xl border border-gray-200 hover:bg-gray-50 text-gray-600 transition disabled:opacity-60">
+            {downloadingPdf
+              ? <div className="w-4 h-4 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
+              : <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                    d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H8a2 2 0 01-2-2V5a2 2 0 012-2h6l6 6v11a2 2 0 01-2 2z" />
+                </svg>
+            }
+            {downloadingPdf ? "Generating..." : "Download PDF"}
+          </button>
+          <button onClick={handleExportExcel} disabled={exporting}
+            className="flex items-center gap-2 text-sm px-4 py-2.5 rounded-xl border border-gray-200 hover:bg-gray-50 text-gray-600 transition disabled:opacity-60">
+            {exporting
+              ? <div className="w-4 h-4 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
+              : <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                    d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H8a2 2 0 01-2-2V5a2 2 0 012-2h6l6 6v11a2 2 0 01-2 2z" />
+                </svg>
+            }
+            {exporting ? "Exporting..." : "Export to Excel"}
           </button>
         </div>
       </div>
@@ -337,7 +474,7 @@ export default function Reports() {
 
       {/* Print footer */}
       <div className="print-only mt-8 pt-4 border-t border-gray-200 text-center text-xs text-gray-400">
-        PropFlow · Real Estate Management · Confidential report
+        {COMPANY_NAME} · Real Estate Management · Confidential report
       </div>
     </div>
   )

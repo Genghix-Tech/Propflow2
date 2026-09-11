@@ -1,71 +1,24 @@
-import { supabaseAdmin } from "../lib/supabaseAdmin"
 import { supabase } from "../lib/supabase"
 
-export const createUser = async ({ username, password, display_name, role_id }) => {
-  const email = `${username.toLowerCase().trim()}@propflow.internal`
-
-  const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
-    email,
-    password,
-    email_confirm: true,
-    user_metadata: { display_name },
-  })
-
-  if (authError) throw authError
-
-  const userId = authData.user.id
-
-  await new Promise(resolve => setTimeout(resolve, 800))
-
-  const { data: profileData, error: profileError } = await supabaseAdmin
-    .from("profiles")
-    .upsert({
-      id: userId,
-      username: username.toLowerCase().trim(),
-      display_name,
-      role_id,
-      is_active: true,
-    }, { onConflict: "id" })
-    .select()
-    .single()
-
-  if (profileError) {
-    console.error("Profile upsert error:", profileError)
-    throw new Error("User created but profile setup failed: " + profileError.message)
-  }
-
-  return { authData, profileData }
-}
-
-export const signInWithUsername = async (username, password) => {
-  const { data: profileData, error: profileError } = await supabase
-    .from("profiles")
-    .select("id, username, role, is_active, display_name")
-    .eq("username", username.toLowerCase().trim())
-    .maybeSingle()
-
-  if (profileError || !profileData) throw new Error("Invalid username or password")
-  if (!profileData.is_active) throw new Error("Account deactivated. Contact administrator.")
-
-  const { data: email, error: rpcError } = await supabase
-    .rpc("get_user_email_by_id", { user_id: profileData.id })
-
-  if (rpcError || !email) throw new Error("Login failed — contact administrator")
-
-  const { data, error } = await supabase.auth.signInWithPassword({
-    email: email.trim(),
-    password,
-  })
-
-  if (error) throw new Error("Invalid username or password")
-
-  await supabase
-    .from("profiles")
-    .update({ last_login: new Date().toISOString() })
-    .eq("id", profileData.id)
-
+// Anything requiring the Supabase Auth Admin API (create/delete a user, reset
+// someone else's password) can't be done with the anon key + RLS — it goes
+// through the admin-ops Edge Function, the only place in this project that
+// holds the service-role key. See supabase/functions/admin-ops/index.ts.
+const callAdminOps = async (action, payload) => {
+  const { data, error } = await supabase.functions.invoke("admin-ops", { body: { action, payload } })
+  if (error) throw error
+  if (data?.error) throw new Error(data.error)
   return data
 }
+
+export const createUser = ({ username, password, display_name, role_id }) =>
+  callAdminOps("createStaffUser", { username, password, display_name, role_id })
+
+export const adminResetPassword = (userId, newPassword) =>
+  callAdminOps("resetStaffPassword", { userId, newPassword })
+
+export const deleteUser = (userId) =>
+  callAdminOps("deleteStaffUser", { userId })
 
 export const getUsers = async () => {
   const { data, error } = await supabase
@@ -76,16 +29,10 @@ export const getUsers = async () => {
   return data
 }
 
-export const updateUserRole = async (userId, role) => {
-  const { error } = await supabaseAdmin
-    .from("profiles")
-    .update({ role })
-    .eq("id", userId)
-  if (error) throw error
-}
-
+// is_active updates on ANOTHER user's profile need the "Owner can update any
+// profile" RLS policy — only an Owner's session can satisfy it.
 export const toggleUserActive = async (userId, isActive) => {
-  const { error } = await supabaseAdmin
+  const { error } = await supabase
     .from("profiles")
     .update({ is_active: isActive })
     .eq("id", userId)
@@ -97,25 +44,13 @@ export const changePassword = async (newPassword) => {
   if (error) throw error
 }
 
-export const adminResetPassword = async (userId, newPassword) => {
-  const { error } = await supabaseAdmin.auth.admin.updateUserById(userId, {
-    password: newPassword,
-  })
-  if (error) throw error
-}
-
 export const updateUserInfo = async (userId, { display_name, username }) => {
-  const { error } = await supabaseAdmin
+  const { error } = await supabase
     .from("profiles")
     .update({
       display_name,
       username: username.toLowerCase().trim(),
     })
     .eq("id", userId)
-  if (error) throw error
-}
-
-export const deleteUser = async (userId) => {
-  const { error } = await supabaseAdmin.auth.admin.deleteUser(userId)
   if (error) throw error
 }

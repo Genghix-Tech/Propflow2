@@ -15,7 +15,8 @@ const defaultForm = {
   occupation: "",
   building_id: "", unit_id: "",
   lease_start: "", lease_end: "",
-  monthly_rent: "", maintenance_charges: "", security_deposit: "",
+  monthly_rent: "", maintenance_charges: "", security_deposit: "", advance_deposit: "",
+  tax_type: "", tax_percentage: "",
   escalation_pct: "5", lock_in_months: "11",
   notify_whatsapp: true, notify_email: true, notify_sms: false,
 }
@@ -42,11 +43,22 @@ export default function AddTenant() {
 
   const set = (field, value) => setForm(f => ({ ...f, [field]: value }))
 
+  // Tax is a percentage of monthly rent — e.g. rent 10,000 + 5% tax = 500.
+  const taxAmount = () => {
+    const rent = Number(form.monthly_rent) || 0
+    const pct  = Number(form.tax_percentage) || 0
+    return Math.round(rent * pct / 100)
+  }
+
   const firstMonthTotal = () => {
-    const rent    = Number(form.monthly_rent) || 0
-    const maint   = Number(form.maintenance_charges) || 0
-    const deposit = Number(form.security_deposit) || 0
-    return formatCurrency(rent + maint + deposit)
+    const rent     = Number(form.monthly_rent) || 0
+    const maint    = Number(form.maintenance_charges) || 0
+    const security = Number(form.security_deposit) || 0
+    const advance  = Number(form.advance_deposit) || 0
+    // Advance deposit was already handed over at signing, so it's credited
+    // against (subtracted from) what's actually due on the first invoice.
+    // Tax, unlike security/advance, applies every month — including this one.
+    return formatCurrency(rent + maint + security - advance + taxAmount())
   }
 
   const validateStep = (s) => {
@@ -68,6 +80,13 @@ export default function AddTenant() {
   // Moving between steps is always allowed — validation only happens on final save.
   const handleNext = () => setStep(s => Math.min(s + 1, steps.length - 1))
   const goToStep = (i) => setStep(i)
+
+  // Drives the stepper's checkmarks: a step only turns green once its own
+  // required fields are actually filled in, not just because the person
+  // clicked past it. Steps with no required fields (KYC docs, notifications)
+  // have nothing to validate, so they stay a plain numbered step rather than
+  // claiming to be "complete".
+  const isStepComplete = (i) => (i === 0 || i === 1) ? validateStep(i) === null : false
 
   const handleSubmit = async () => {
     // Check every step, not just the current one, since the person may have
@@ -99,6 +118,9 @@ export default function AddTenant() {
         monthly_rent: Number(form.monthly_rent) || 0,
         maintenance_charges: Number(form.maintenance_charges) || 0,
         security_deposit: Number(form.security_deposit) || 0,
+        advance_deposit: Number(form.advance_deposit) || 0,
+        tax_type: form.tax_type || null,
+        tax_percentage: Number(form.tax_percentage) || 0,
         escalation_pct: Number(form.escalation_pct) || 0,
         lock_in_months: Number(form.lock_in_months) || 0,
         notify_whatsapp: form.notify_whatsapp,
@@ -153,33 +175,36 @@ export default function AddTenant() {
 
       {/* Stepper */}
       <div className="flex items-center gap-0">
-        {steps.map((label, i) => (
-          <div key={i} className="flex items-center flex-1">
-            <button type="button" onClick={() => goToStep(i)}
-              className="flex items-center gap-2 flex-shrink-0 cursor-pointer group">
-              <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-medium transition-all ${
-                i < step  ? "bg-green-500 text-white group-hover:bg-green-600" :
-                i === step ? "bg-brand-500 text-white" :
-                "border border-gray-200 text-gray-400 group-hover:border-gray-300 group-hover:text-gray-500"
-              }`}>
-                {i < step
-                  ? <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
-                    </svg>
-                  : i + 1
-                }
-              </div>
-              <span className={`text-xs font-medium hidden sm:block whitespace-nowrap ${
-                i < step ? "text-green-600" :
-                i === step ? "text-brand-600" :
-                "text-gray-400 group-hover:text-gray-600"
-              }`}>{label}</span>
-            </button>
-            {i < steps.length - 1 && (
-              <div className={`flex-1 h-px mx-3 ${i < step ? "bg-green-300" : "bg-gray-200"}`} />
-            )}
-          </div>
-        ))}
+        {steps.map((label, i) => {
+          const complete = i !== step && isStepComplete(i)
+          return (
+            <div key={i} className="flex items-center flex-1">
+              <button type="button" onClick={() => goToStep(i)}
+                className="flex items-center gap-2 flex-shrink-0 cursor-pointer group">
+                <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-medium transition-all ${
+                  complete   ? "bg-green-500 text-white group-hover:bg-green-600" :
+                  i === step ? "bg-brand-500 text-white" :
+                  "border border-gray-200 text-gray-400 group-hover:border-gray-300 group-hover:text-gray-500"
+                }`}>
+                  {complete
+                    ? <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                      </svg>
+                    : i + 1
+                  }
+                </div>
+                <span className={`text-xs font-medium hidden sm:block whitespace-nowrap ${
+                  complete   ? "text-green-600" :
+                  i === step ? "text-brand-600" :
+                  "text-gray-400 group-hover:text-gray-600"
+                }`}>{label}</span>
+              </button>
+              {i < steps.length - 1 && (
+                <div className={`flex-1 h-px mx-3 ${isStepComplete(i) ? "bg-green-300" : "bg-gray-200"}`} />
+              )}
+            </div>
+          )
+        })}
       </div>
       <p className="text-xs text-gray-400 -mt-3">
         You can move between steps freely — all sections must be complete before saving.
@@ -314,7 +339,7 @@ export default function AddTenant() {
                 <Input type="number" value={form.monthly_rent}
                   onChange={v => {
                     set("monthly_rent", v)
-                    set("security_deposit", String(Number(v) * 3))
+                    set("security_deposit", String(Number(v) * 2))
                   }}
                   placeholder="e.g. 32000" />
               </div>
@@ -322,10 +347,31 @@ export default function AddTenant() {
                 <Label text="Maintenance charges (PKR)" />
                 <Input type="number" value={form.maintenance_charges} onChange={v => set("maintenance_charges", v)} placeholder="e.g. 1500" />
               </div>
-              <div className="sm:col-span-2">
+              <div>
                 <Label text="Security deposit (PKR)" required />
-                <Input type="number" value={form.security_deposit} onChange={v => set("security_deposit", v)} placeholder="Auto: 3× rent" />
-                <p className="text-xs text-gray-400 mt-1">Auto-suggested as 3× monthly rent</p>
+                <Input type="number" value={form.security_deposit} onChange={v => set("security_deposit", v)} placeholder="Auto: 2× rent" />
+                <p className="text-xs text-gray-400 mt-1">Refundable, held by landlord — auto-suggested as 2× rent</p>
+              </div>
+              <div>
+                <Label text="Advance deposit (PKR)" />
+                <Input type="number" value={form.advance_deposit} onChange={v => set("advance_deposit", v)} placeholder="e.g. 32000" />
+                <p className="text-xs text-gray-400 mt-1">Already paid by tenant at signing — credited against the first invoice</p>
+              </div>
+              <div>
+                <Label text="Tax type" />
+                <Select value={form.tax_type} onChange={v => set("tax_type", v)}>
+                  <option value="">None</option>
+                  <option value="GST">GST</option>
+                  <option value="WHT">WHT</option>
+                  <option value="OTHER TAX">Other tax</option>
+                </Select>
+              </div>
+              <div>
+                <Label text="Tax percentage (%)" />
+                <Input type="number" value={form.tax_percentage} onChange={v => set("tax_percentage", v)} placeholder="e.g. 5" />
+                <p className="text-xs text-gray-400 mt-1">
+                  % of monthly rent, added automatically to every invoice{form.monthly_rent && Number(form.tax_percentage) > 0 ? ` — ${formatCurrency(taxAmount())} on this rent` : ""}
+                </p>
               </div>
             </div>
 
@@ -344,6 +390,18 @@ export default function AddTenant() {
                   <span>Security deposit (one-time)</span>
                   <span>{formatCurrency(form.security_deposit || 0)}</span>
                 </div>
+                {Number(form.advance_deposit) > 0 && (
+                  <div className="flex justify-between text-sm text-green-600">
+                    <span>Advance deposit already paid</span>
+                    <span>-{formatCurrency(form.advance_deposit)}</span>
+                  </div>
+                )}
+                {taxAmount() > 0 && (
+                  <div className="flex justify-between text-sm text-gray-500">
+                    <span>{form.tax_type || "Tax"} ({form.tax_percentage}%)</span>
+                    <span>{formatCurrency(taxAmount())}</span>
+                  </div>
+                )}
                 <div className="flex justify-between text-sm font-semibold text-gray-900 border-t border-gray-200 pt-2">
                   <span>First month total due</span>
                   <span className="text-brand-600">{firstMonthTotal()}</span>
