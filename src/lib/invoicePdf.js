@@ -4,12 +4,23 @@
 // This file is dynamically imported only when the user clicks "Download PDF" —
 // jsPDF never loads into the main bundle, so it costs nothing for users who don't use it.
 //
-// Default template — plain text header (company name/tagline from config),
-// no letterhead background image. Content is center-aligned down the page,
-// no bordered table.
+// Layout mirrors the client's real paper letterhead: the logo and project
+// watermarks run down the left ~135pt of the page (baked into
+// invoice-letterhead.png), so all invoice content — Billed to / Invoice
+// details side by side, an itemized Description/Amount list, and the
+// Subtotal/Tax/Total breakdown — is drawn in the column to the right of that.
 
 import { printGeneratedPdf } from "./printPdf"
-import { COMPANY_NAME, COMPANY_TAGLINE } from "../config/branding"
+import letterheadUrl from "../assets/invoice-letterhead.png"
+
+function loadLetterhead() {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => resolve(img)
+    img.onerror = () => reject(new Error("Failed to load invoice letterhead"))
+    img.src = letterheadUrl
+  })
+}
 
 const MONTHS = [
   "January", "February", "March", "April", "May", "June",
@@ -38,10 +49,11 @@ export async function generateInvoicePdf(invoice, utilityCharges = [], discountC
   const pageWidth = doc.internal.pageSize.getWidth()
   const pageHeight = doc.internal.pageSize.getHeight()
 
-  // Symmetric margins, content centered on the page — no reserved logo column.
-  const margin = 48
-  const centerX = pageWidth / 2
-  const maxTextWidth = pageWidth - margin * 2 - 20
+  // Everything is drawn clear of the logos column on the left.
+  const contentLeft = 135
+  const marginRight = 40
+  const colWidth = (pageWidth - marginRight - contentLeft) / 2
+  const maxTextWidth = pageWidth - marginRight - contentLeft - 20
 
   const brand = [24, 95, 165]   // matches --color-brand-500
   const gray900 = [17, 24, 39]
@@ -51,110 +63,184 @@ export async function generateInvoicePdf(invoice, utilityCharges = [], discountC
   const green = [22, 163, 74]
   const red = [220, 38, 38]
 
-  let y = 56
+  const letterheadImg = await loadLetterhead()
+  doc.addImage(letterheadImg, "PNG", 0, 0, pageWidth, pageHeight)
 
-  // Header — plain company name/tagline, centered.
-  doc.setFont("helvetica", "bold")
-  doc.setFontSize(18)
-  doc.setTextColor(...gray900)
-  doc.text(COMPANY_NAME, centerX, y, { align: "center" })
-  doc.setFont("helvetica", "normal")
-  doc.setFontSize(9)
-  doc.setTextColor(...gray400)
-  doc.text(COMPANY_TAGLINE, centerX, y + 14, { align: "center" })
+  let y = 118
 
-  y += 40
-  doc.setDrawColor(230, 230, 230)
-  doc.line(margin, y, pageWidth - margin, y)
-  y += 30
-
+  // Title row — "INVOICE" on the left, invoice number/status on the right.
+  // No company name/tagline here; the letterhead's logo already carries that.
   doc.setFont("helvetica", "bold")
   doc.setFontSize(14)
   doc.setTextColor(...gray900)
-  doc.text("INVOICE", centerX, y, { align: "center" })
+  doc.text("INVOICE", contentLeft, y)
 
-  y += 20
+  doc.setFont("helvetica", "bold")
+  doc.setFontSize(16)
+  doc.setTextColor(...gray900)
+  doc.text(invoice.invoice_number || "", pageWidth - marginRight, y, { align: "right" })
   doc.setFont("helvetica", "normal")
-  doc.setFontSize(9)
-  doc.setTextColor(...gray500)
-  doc.text(`Ref No: ${invoice.invoice_number || "—"}   |   Date: ${formatDateLong(invoice.created_at)}`, centerX, y, { align: "center" })
+  doc.setFontSize(10)
+  doc.setTextColor(...brand)
+  doc.text((invoice.status || "").toUpperCase(), pageWidth - marginRight, y + 16, { align: "right" })
 
-  y += 26
-  doc.setDrawColor(225, 225, 225)
-  doc.line(centerX - 90, y, centerX + 90, y)
-  y += 24
+  y += 40
+  doc.setDrawColor(230, 230, 230)
+  doc.line(contentLeft, y, pageWidth - marginRight, y)
+  y += 28
 
-  // "Billed to" block
+  // Billed to / Invoice details — two columns
   const tenant = invoice.tenants
+
   doc.setFont("helvetica", "bold")
   doc.setFontSize(8)
   doc.setTextColor(...gray400)
-  doc.text("BILLED TO", centerX, y, { align: "center" })
+  doc.text("BILLED TO", contentLeft, y)
+  doc.text("INVOICE DETAILS", contentLeft + colWidth, y)
   y += 16
+
   doc.setFont("helvetica", "bold")
-  doc.setFontSize(12)
+  doc.setFontSize(11)
   doc.setTextColor(...gray900)
-  doc.text(tenant?.full_name || "—", centerX, y, { align: "center" })
-  y += 15
+  doc.text(tenant?.full_name || "—", contentLeft, y)
+
   doc.setFont("helvetica", "normal")
   doc.setFontSize(9)
   doc.setTextColor(...gray500)
-  const addressBits = [invoice.buildings?.name, invoice.units?.unit_number ? `Unit / Office # ${invoice.units.unit_number}` : null, tenant?.phone]
-    .filter(Boolean)
-  addressBits.forEach(line => { doc.text(line, centerX, y, { align: "center" }); y += 13 })
-
-  y += 16
-  doc.setDrawColor(225, 225, 225)
-  doc.line(centerX - 90, y, centerX + 90, y)
-  y += 26
-
-  // Charges — one centered line per item, ending in a bold Total due line.
-  const rows = [
-    [`Monthly rent — ${MONTHS[invoice.month - 1] || ""} ${invoice.year || ""}`, formatMoney(invoice.rent_amount), false],
+  const detailRows = [
+    ["Invoice number", invoice.invoice_number || "—"],
+    ["Period", `${MONTHS[invoice.month - 1] || ""} ${invoice.year || ""}`],
+    ["Due date", formatDateLong(invoice.due_date)],
   ]
-  if (Number(invoice.maintenance_amount) > 0) {
-    rows.push(["Maintenance charges", formatMoney(invoice.maintenance_amount), false])
-  }
-  if (Number(invoice.security_deposit_amount) > 0) {
-    rows.push(["Security deposit (one-time)", formatMoney(invoice.security_deposit_amount), false])
-  }
-  if (Number(invoice.advance_deposit_amount) > 0) {
-    rows.push(["Advance deposit paid (credit)", `-${formatMoney(invoice.advance_deposit_amount)}`, true])
-  }
+  if (invoice.paid_date) detailRows.push(["Paid on", formatDateLong(invoice.paid_date)])
+  if (invoice.payment_method) detailRows.push(["Payment method", invoice.payment_method.replace(/_/g, " ")])
+
+  let detailY = y
+  detailRows.forEach(([label, value]) => {
+    doc.setTextColor(...gray400)
+    doc.text(label, contentLeft + colWidth, detailY)
+    doc.setTextColor(...gray900)
+    doc.text(String(value), pageWidth - marginRight, detailY, { align: "right" })
+    detailY += 14
+  })
+
+  y += 14
+  doc.setTextColor(...gray500)
+  doc.text(tenant?.phone || "", contentLeft, y)
+  y += 14
+  doc.text(invoice.buildings?.name || "", contentLeft, y)
+  y += 14
+  doc.text(invoice.units?.unit_number || "", contentLeft, y)
+
+  y = Math.max(y, detailY) + 28
+  doc.setDrawColor(230, 230, 230)
+  doc.line(contentLeft, y, pageWidth - marginRight, y)
+  y += 24
+
+  // Charges table
+  doc.setFont("helvetica", "bold")
+  doc.setFontSize(8)
+  doc.setTextColor(...gray400)
+  doc.text("DESCRIPTION", contentLeft, y)
+  doc.text("AMOUNT", pageWidth - marginRight, y, { align: "right" })
+  y += 8
+  doc.setDrawColor(230, 230, 230)
+  doc.line(contentLeft, y, pageWidth - marginRight, y)
+  y += 18
+
+  const lineItems = [
+    [`Monthly rent — ${MONTHS[invoice.month - 1] || ""} ${invoice.year || ""}`, invoice.rent_amount],
+  ]
+  if (Number(invoice.maintenance_amount) > 0) lineItems.push(["Maintenance charges", invoice.maintenance_amount])
+  if (Number(invoice.security_deposit_amount) > 0) lineItems.push(["Security deposit (one-time)", invoice.security_deposit_amount])
+  if (Number(invoice.advance_deposit_amount) > 0) lineItems.push(["Advance deposit paid (credit)", -invoice.advance_deposit_amount])
   securityInstallments.forEach(inst => {
-    rows.push([inst.notes ? `Security deposit installment — ${inst.notes}` : "Security deposit installment", formatMoney(inst.amount), false])
+    lineItems.push([inst.notes ? `Security deposit installment — ${inst.notes}` : "Security deposit installment", inst.amount])
   })
   utilityCharges.forEach(charge => {
     const label = UTILITY_LABELS[charge.utility_type] || charge.utility_type
-    rows.push([charge.notes ? `${label} — ${charge.notes}` : label, formatMoney(charge.amount), false])
+    lineItems.push([charge.notes ? `${label} — ${charge.notes}` : label, charge.amount])
   })
-  // Tax is a fixed field set on the tenant (see AddTenant.jsx), snapshotted
+  // Tax is a percentage of rent set on the tenant (see AddTenant.jsx), snapshotted
   // onto the invoice at generation time — not a manually-added line item.
   if (Number(invoice.tax_amount) > 0) {
     const taxLabel = `${invoice.tax_type || "Tax"}${invoice.tax_percentage ? ` (${invoice.tax_percentage}%)` : ""}`
-    rows.push([taxLabel, formatMoney(invoice.tax_amount), false])
+    lineItems.push([taxLabel, invoice.tax_amount])
   }
-  discountCharges.forEach(discount => {
-    rows.push([discount.discount_type || "Discount", `-${formatMoney(discount.amount)}`, true])
-  })
 
+  doc.setFont("helvetica", "normal")
   doc.setFontSize(10)
-  rows.forEach(([label, amount, isCredit]) => {
-    doc.setFont("helvetica", "normal")
-    doc.setTextColor(...(isCredit ? green : gray700))
-    doc.text(`${label}:  ${amount}`, centerX, y, { align: "center" })
-    y += 18
+  lineItems.forEach(([label, amount]) => {
+    const isCredit = Number(amount) < 0
+    doc.setTextColor(...gray500)
+    doc.text(label, contentLeft, y)
+    doc.setTextColor(...(isCredit ? green : gray900))
+    doc.text(isCredit ? `-${formatMoney(-amount)}` : formatMoney(amount), pageWidth - marginRight, y, { align: "right" })
+    y += 20
   })
 
-  y += 8
-  doc.setDrawColor(225, 225, 225)
-  doc.line(centerX - 90, y, centerX + 90, y)
-  y += 24
+  y += 12
+  doc.setDrawColor(230, 230, 230)
+  doc.line(pageWidth - marginRight - 180, y, pageWidth - marginRight, y)
+  y += 20
+
+  // Discounts are shown as their own list (negative amounts), kept visually
+  // separate from the charges table above — same as the on-screen invoice.
+  const discountTotal = discountCharges.reduce((sum, d) => sum + Number(d.amount || 0), 0)
+  if (discountTotal > 0) {
+    doc.setFont("helvetica", "bold")
+    doc.setFontSize(8)
+    doc.setTextColor(...gray400)
+    doc.text("DISCOUNT", contentLeft, y)
+    y += 14
+    doc.setFont("helvetica", "normal")
+    doc.setFontSize(10)
+    discountCharges.forEach(discount => {
+      doc.setTextColor(...gray500)
+      doc.text(discount.discount_type, contentLeft, y)
+      doc.setTextColor(...red)
+      doc.text(`-${formatMoney(discount.amount)}`, pageWidth - marginRight, y, { align: "right" })
+      y += 18
+    })
+    y += 8
+  }
+
+  // Show a Subtotal / Tax / Discount breakdown above the total only when tax
+  // or discount lines exist — keeps the layout unchanged for plain invoices.
+  const taxTotal = Number(invoice.tax_amount || 0)
+  if (taxTotal > 0 || discountTotal > 0) {
+    const subtotal = Number(invoice.total_amount || 0) - taxTotal + discountTotal
+    doc.setFont("helvetica", "normal")
+    doc.setFontSize(10)
+    doc.setTextColor(...gray500)
+    doc.text("Subtotal", pageWidth - marginRight - 180, y)
+    doc.setTextColor(...gray900)
+    doc.text(formatMoney(subtotal), pageWidth - marginRight, y, { align: "right" })
+    y += 18
+    if (taxTotal > 0) {
+      const taxLabel = `${invoice.tax_type || "Tax"}${invoice.tax_percentage ? ` (${invoice.tax_percentage}%)` : ""}`
+      doc.setTextColor(...gray500)
+      doc.text(taxLabel, pageWidth - marginRight - 180, y)
+      doc.setTextColor(...gray900)
+      doc.text(formatMoney(taxTotal), pageWidth - marginRight, y, { align: "right" })
+      y += 18
+    }
+    if (discountTotal > 0) {
+      doc.setTextColor(...gray500)
+      doc.text("Discount", pageWidth - marginRight - 180, y)
+      doc.setTextColor(...red)
+      doc.text(`-${formatMoney(discountTotal)}`, pageWidth - marginRight, y, { align: "right" })
+      y += 18
+    }
+    y += 2
+  }
 
   doc.setFont("helvetica", "bold")
-  doc.setFontSize(13)
+  doc.setFontSize(12)
+  doc.setTextColor(...gray900)
+  doc.text("Total due", pageWidth - marginRight - 180, y)
   doc.setTextColor(...brand)
-  doc.text(`Total due:  ${formatMoney(invoice.total_amount)}`, centerX, y, { align: "center" })
+  doc.text(formatMoney(invoice.total_amount), pageWidth - marginRight, y, { align: "right" })
 
   y += 30
 
@@ -165,44 +251,42 @@ export async function generateInvoicePdf(invoice, utilityCharges = [], discountC
     doc.setTextColor(...green)
     doc.text(
       `Paid on ${formatDateLong(invoice.paid_date)}${invoice.payment_method ? ` via ${invoice.payment_method.replace(/_/g, " ")}` : ""}`,
-      centerX, y, { align: "center" }
+      contentLeft, y
     )
     y += 18
   } else if (invoice.due_date) {
     doc.setTextColor(...red)
-    doc.text(`Kindly clear this invoice before ${formatDateLong(invoice.due_date)}.`, centerX, y, { align: "center" })
+    doc.text(`Kindly clear this invoice before ${formatDateLong(invoice.due_date)}.`, contentLeft, y)
     y += 18
   }
-  doc.setFont("helvetica", "bold")
-  doc.setFontSize(9)
-  doc.setTextColor(...brand)
-  doc.text((invoice.status || "").toUpperCase(), centerX, y, { align: "center" })
-  y += 28
 
   // Bank / payment-receiving details — set once in Settings, printed on every invoice.
   if (bankInfo && bankInfo.trim()) {
-    doc.setDrawColor(225, 225, 225)
-    doc.line(centerX - 90, y, centerX + 90, y)
+    y += 10
+    doc.setDrawColor(230, 230, 230)
+    doc.line(contentLeft, y, pageWidth - marginRight, y)
     y += 20
     doc.setFont("helvetica", "bold")
     doc.setFontSize(8)
     doc.setTextColor(...gray400)
-    doc.text("PAYMENT DETAILS", centerX, y, { align: "center" })
+    doc.text("PAYMENT DETAILS", contentLeft, y)
     y += 15
     doc.setFont("helvetica", "normal")
     doc.setFontSize(9)
     doc.setTextColor(...gray700)
     const bankLines = doc.splitTextToSize(bankInfo.trim(), maxTextWidth)
-    bankLines.forEach(line => { doc.text(line, centerX, y, { align: "center" }); y += 13 })
+    bankLines.forEach(line => { doc.text(line, contentLeft, y); y += 13 })
   }
 
-  // Fixed footer notes, near the bottom of the page.
+  // A short note only — the letterhead itself already carries the company's
+  // address/website/email/phone in its footer strip below, so nothing more is
+  // drawn here; this line sits well clear of that strip.
   doc.setFont("helvetica", "normal")
   doc.setFontSize(8)
   doc.setTextColor(...gray400)
-  doc.text("This is a system-generated invoice and does not require a signature.", pageWidth / 2, pageHeight - 60, { align: "center" })
+  doc.text("This is a system-generated invoice and does not require a signature.", pageWidth / 2, pageHeight - 90, { align: "center" })
   doc.setFontSize(7.5)
-  doc.text("Developed by GENGHIX TECH  ·  www.genghixtech.com  ·  info@genghixtech.com  ·  +92 327 5534726", pageWidth / 2, pageHeight - 46, { align: "center" })
+  doc.text("Developed by GENGHIX TECH  ·  www.genghixtech.com  ·  info@genghixtech.com  ·  +92 327 5534726", pageWidth / 2, pageHeight - 76, { align: "center" })
 
   // "Print" sends the real generated document straight to the print dialog
   // (via a hidden iframe) instead of window.print()-ing the styled dashboard
